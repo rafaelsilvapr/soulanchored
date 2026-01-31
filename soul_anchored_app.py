@@ -5,10 +5,10 @@ import time
 import tempfile
 import subprocess
 import zipfile
+import json
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from dotenv import load_dotenv
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -21,15 +21,15 @@ from mutagen.wav import WAV
 from PIL import Image
 import google.generativeai as genai
 
-# Load environment variables
-load_dotenv()
-
-# Configuration
-# On Streamlit Cloud, use st.secrets. On local, use os.getenv
-SUPABASE_URL = st.secrets.get("SUPABASE_URL") or os.getenv("SUPABASE_URL")
-SUPABASE_KEY = st.secrets.get("SUPABASE_KEY") or os.getenv("SUPABASE_KEY")
-GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
-FOLDER_ID = '15xna7XFA7W3liDawGjbHqpF7o4_nmo1e'
+# Configuration from Streamlit Secrets
+try:
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+    FOLDER_ID = st.secrets.get("FOLDER_ID", "15xna7XFA7W3liDawGjbHqpF7o4_nmo1e")
+except KeyError as e:
+    st.error(f"Configuração ausente nos Secrets: {e}")
+    st.stop()
 
 # Setup Gemini
 if GOOGLE_API_KEY:
@@ -47,28 +47,23 @@ def get_supabase_client():
 
 def get_drive_service():
     creds = None
-    # On Streamlit Cloud, we might need a different auth flow or a pre-stored token in secrets
-    # For now, we maintain the local token.json check
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    # No Cloud, tentamos recuperar o token dos secrets ou forçamos novo login
+    if "GOOGLE_TOKEN" in st.secrets:
+        token_info = json.loads(st.secrets["GOOGLE_TOKEN"])
+        creds = Credentials.from_authorized_user_info(token_info, SCOPES)
+    
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            if not os.path.exists('credentials.json') and not st.secrets.get("GOOGLE_CREDENTIALS"):
-                st.error("Error: Google credentials not found.")
+            if "GOOGLE_CREDENTIALS" not in st.secrets:
+                st.error("Erro: Credenciais do Google (JSON) não encontradas nos Secrets.")
                 return None
             
-            if os.path.exists('credentials.json'):
-                flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-            else:
-                import json
-                creds_info = json.loads(st.secrets["GOOGLE_CREDENTIALS"])
-                flow = InstalledAppFlow.from_client_config(creds_info, SCOPES)
-                
+            creds_info = json.loads(st.secrets["GOOGLE_CREDENTIALS"])
+            flow = InstalledAppFlow.from_client_config(creds_info, SCOPES)
             creds = flow.run_local_server(port=0)
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
+            
     return build('drive', 'v3', credentials=creds)
 
 def download_file_from_drive(service, file_id, destination):
@@ -83,7 +78,7 @@ def download_file_from_drive(service, file_id, destination):
 # --- UI Layout ---
 st.set_page_config(page_title="Soul Anchored Montage App", page_icon="🎬", layout="wide")
 
-# Custom CSS for Premium Look
+# Custom CSS
 st.markdown("""
     <style>
     .stApp { background: linear-gradient(135deg, #0a0b10 0%, #1a1b25 100%); color: #e0e0e0; }
@@ -98,13 +93,9 @@ st.subheader("Cloud Edition ☁️")
 
 with st.sidebar:
     st.header("⚙️ Status")
-    if SUPABASE_URL and SUPABASE_KEY:
-        st.success("✅ Supabase Conectado")
-    else:
-        st.error("❌ Supabase Não Configurado")
-    
+    st.success("✅ Supabase Conectado")
     st.divider()
-    st.info("💡 Este app gera um arquivo .ZIP com todos os vídeos, o áudio e o XML prontos para o CapCut.")
+    st.info("💡 Este app gera um arquivo .ZIP com vídeos, áudio e XML para o CapCut.")
 
 tab1, tab2 = st.tabs(["🚀 Produção", "📂 Indexar Biblioteca"])
 
