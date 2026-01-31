@@ -1,5 +1,5 @@
 streamlit==1.41.1
-supabase==2.13.0
+supabase==2.27.2
 google-api-python-client==2.160.0
 google-auth-httplib2==0.2.0
 google-auth-oauthlib==1.2.1
