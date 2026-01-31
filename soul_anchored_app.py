@@ -17,7 +17,7 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 from supabase import create_client, Client
 from mutagen.mp3 import MP3
-from mutagen.wav import WAV
+from mutagen.wave import WAVE
 from PIL import Image
 import google.generativeai as genai
 
@@ -137,7 +137,7 @@ with tab1:
             
         try:
             if file_ext == 'mp3': duration = MP3(tmp_audio_path).info.length
-            else: duration = WAV(tmp_audio_path).info.length
+            else: duration = WAVE(tmp_audio_path).info.length
         except: duration = 0
             
         st.success(f"Duração: {duration:.2f}s")
