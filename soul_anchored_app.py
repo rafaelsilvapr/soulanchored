@@ -170,7 +170,7 @@ with tab1:
                         block_start = i * 10
                         block_text = " ".join(sentences[i*sentences_per_block : (i+1)*sentences_per_block])
                         
-                        res = supabase.table("video_library").select("*").order("last_used_at", ascending=True, nulls_first=True).execute()
+                        res = supabase.table("video_library").select("*").order("last_used_at", desc=False, nullsfirst=True).execute()
                         videos = res.data
                         tags_needed = [w.lower() for w in re.findall(r'\w{5,}', block_text)]
                         
