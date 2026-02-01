@@ -121,25 +121,28 @@ try:
             st.error(f"Erro ao extrair quadro: {e}")
             return False
 
-    def analyze_vision(image_path):
+    def analyze_vision(image_path, retries=2):
         if not gemini_model: return {}
-        try:
-            img = Image.open(image_path)
-            prompt = """
-            Analise este vídeo para um sistema de montagem de vídeos de fé.
-            Identifique:
-            1. Ação Principal (verbo e movimento)
-            2. Emoção Predominante (sentimento da cena)
-            3. Descrição Visual Curta (contexto)
-            Retorne APENAS um JSON: {"acao": "...", "emocao": "...", "descricao": "..."}
-            Priorize termos como: ajoelhar com humildade, olhar sereno para o horizonte, lágrimas de alívio, abraço fraterno.
-            """
-            response = gemini_model.generate_content([prompt, img])
-            json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
-            return json.loads(json_match.group()) if json_match else {}
-        except Exception as e:
-            st.error(f"Erro na Visão IA: {e}")
-            return {}
+        for attempt in range(retries + 1):
+            try:
+                img = Image.open(image_path)
+                prompt = """
+                Analise este vídeo para um sistema de montagem de vídeos de fé.
+                Identifique: 1. Ação Principal, 2. Emoção Predominante, 3. Descrição Visual.
+                Retorne APENAS JSON: {"acao": "...", "emocao": "...", "descricao": "..."}
+                """
+                response = gemini_model.generate_content([prompt, img])
+                json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+                return json.loads(json_match.group()) if json_match else {}
+            except Exception as e:
+                if "429" in str(e):
+                    if attempt < retries:
+                        st.warning(f"⏳ Limite atingido. Aguardando 60s para tentar novamente ({attempt+1}/{retries})...")
+                        time.sleep(60)
+                        continue
+                st.error(f"Erro na Visão IA: {e}")
+                return {}
+        return {}
 
     def get_storyboard_from_gemini(audio_path, script_text):
         if not gemini_model: return None
@@ -184,9 +187,15 @@ try:
                 service = get_drive_service()
                 if service:
                     with st.status("🔍 Sincronizando com Google Drive...", expanded=True) as status:
-                        # 1. Get Drive Files
-                        query = f"'{FOLDER_ID}' in parents and trashed = false and mimeType contains 'video/'"
-                        drive_files = service.files().list(q=query, fields="files(id, name, webViewLink)").execute().get('files', [])
+                        # 1. Get Drive Files with Pagination
+                        drive_files = []
+                        page_token = None
+                        while True:
+                            query = f"'{FOLDER_ID}' in parents and trashed = false and mimeType contains 'video/'"
+                            results = service.files().list(q=query, fields="nextPageToken, files(id, name, webViewLink)", pageToken=page_token).execute()
+                            drive_files.extend(results.get('files', []))
+                            page_token = results.get('nextPageToken')
+                            if not page_token: break
                         
                         # 2. Get Supabase Files
                         db_files = supabase.table("video_library").select("*").execute().data or []
@@ -220,20 +229,19 @@ try:
                                 last_num += 1
                                 new_name = f"{last_num:04d}.mp4"
                                 st.write(f"🆕 Indexando [{idx}/{total}]: {f['name']} -> {new_name}")
-                                
-                                # Rename in Drive
                                 service.files().update(fileId=f['id'], body={'name': new_name}).execute()
                                 
-                                # Analyze Vision
                                 with tempfile.NamedTemporaryFile(suffix='.jpg') as tmp_img:
                                     if extract_frame(service, f['id'], tmp_img.name):
                                         meta = analyze_vision(tmp_img.name)
-                                        data = {
-                                            "file_id": f['id'], "file_name": new_name, "drive_link": f['webViewLink'],
-                                            "acao": meta.get('acao'), "emocao": meta.get('emocao'), "descricao": meta.get('descricao'),
-                                            "tags": [meta.get('acao'), meta.get('emocao')]
-                                        }
-                                        supabase.table("video_library").upsert(data).execute()
+                                        if meta:
+                                            data = {
+                                                "file_id": f['id'], "file_name": new_name, "drive_link": f['webViewLink'],
+                                                "acao": meta.get('acao'), "emocao": meta.get('emocao'), "descricao": meta.get('descricao'),
+                                                "tags": [meta.get('acao'), meta.get('emocao')]
+                                            }
+                                            supabase.table("video_library").upsert(data).execute()
+                                            time.sleep(10) # Pacing
                                 
                                 progress_bar.progress(idx / total)
 
@@ -244,11 +252,13 @@ try:
                                 with tempfile.NamedTemporaryFile(suffix='.jpg') as tmp_img:
                                     if extract_frame(service, f['file_id'], tmp_img.name):
                                         meta = analyze_vision(tmp_img.name)
-                                        data = {
-                                            "acao": meta.get('acao'), "emocao": meta.get('emocao'), "descricao": meta.get('descricao'),
-                                            "tags": list(set((f.get('tags') or []) + [meta.get('acao'), meta.get('emocao')]))
-                                        }
-                                        supabase.table("video_library").update(data).eq("file_id", f['file_id']).execute()
+                                        if meta:
+                                            data = {
+                                                "acao": meta.get('acao'), "emocao": meta.get('emocao'), "descricao": meta.get('descricao'),
+                                                "tags": list(set((f.get('tags') or []) + [meta.get('acao'), meta.get('emocao')]))
+                                            }
+                                            supabase.table("video_library").update(data).eq("file_id", f['file_id']).execute()
+                                            time.sleep(10) # Pacing
                                 progress_bar.progress(idx / total)
                             
                             st.success("✅ Sincronização Concluída!")
