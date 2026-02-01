@@ -145,6 +145,8 @@ try:
         for attempt in range(retries + 1):
             try:
                 if engine == "OpenAI" and client_openai:
+                    # Give FFmpeg a split second to finish writing the file
+                    time.sleep(1)
                     base64_image = encode_image(image_path)
                     response = client_openai.chat.completions.create(
                         model="gpt-4o",
@@ -159,16 +161,21 @@ try:
                         ],
                         response_format={ "type": "json_object" }
                     )
-                    return json.loads(response.choices[0].message.content)
+                    content = response.choices[0].message.content
+                    if content:
+                        return json.loads(content)
+                    return {}
                 
                 elif engine == "Gemini" and gemini_model:
                     img = Image.open(image_path)
                     response = gemini_model.generate_content([prompt, img])
-                    json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
-                    return json.loads(json_match.group()) if json_match else {}
+                    if response and response.text:
+                        json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+                        return json.loads(json_match.group()) if json_match else {}
+                    return {}
                 
                 else:
-                    st.error(f"Motor {engine} não configurado.")
+                    st.error(f"Motor {engine} não configurado ou chave ausente.")
                     return {}
 
             except Exception as e:
@@ -178,7 +185,8 @@ try:
                         time.sleep(60)
                         continue
                 st.error(f"Erro na Visão {engine}: {e}")
-                return {}
+                # Don't return None, always return dict
+                if attempt == retries: return {}
         return {}
 
     def get_storyboard_from_gemini(audio_path, script_text):
