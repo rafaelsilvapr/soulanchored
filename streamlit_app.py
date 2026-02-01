@@ -121,17 +121,16 @@ try:
                     _, done = downloader.next_chunk()
                 tmp_video_path = tmp_video.name
             
-            # Attempt 1: at 2 seconds
-            cmd = ['ffmpeg', '-y', '-ss', '00:00:02', '-i', tmp_video_path, '-vframes', '1', output_path]
-            res = subprocess.run(cmd, capture_output=True)
-            
-            if res.returncode != 0:
-                # Attempt 2: at 0 seconds (fallback for short/weird videos)
-                cmd = ['ffmpeg', '-y', '-ss', '00:00:00', '-i', tmp_video_path, '-vframes', '1', output_path]
+            # Try multiple timestamps to find a valid frame
+            for ts in ['00:00:02', '00:00:00', '00:00:05']:
+                cmd = ['ffmpeg', '-y', '-ss', ts, '-i', tmp_video_path, '-vframes', '1', output_path]
                 res = subprocess.run(cmd, capture_output=True)
+                if res.returncode == 0:
+                    os.unlink(tmp_video_path)
+                    return True
             
             os.unlink(tmp_video_path)
-            return res.returncode == 0
+            return False
         except Exception as e:
             st.error(f"Erro ao extrair quadro: {e}")
             return False
@@ -151,7 +150,6 @@ try:
         for attempt in range(retries + 1):
             try:
                 if engine == "OpenAI" and client_openai:
-                    # Give FFmpeg a split second to finish writing the file
                     time.sleep(1)
                     base64_image = encode_image(image_path)
                     response = client_openai.chat.completions.create(
@@ -168,21 +166,22 @@ try:
                         response_format={ "type": "json_object" }
                     )
                     content = response.choices[0].message.content
-                    if content:
-                        return json.loads(content)
-                    return {}
+                    if not content:
+                        raise Exception("OpenAI retornou conteúdo vazio (Filtro de Segurança?).")
+                    return json.loads(content)
                 
                 elif engine == "Gemini" and gemini_model:
                     img = Image.open(image_path)
                     response = gemini_model.generate_content([prompt, img])
-                    if response and response.text:
-                        json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
-                        return json.loads(json_match.group()) if json_match else {}
-                    return {}
+                    if not response or not response.text:
+                        raise Exception("Gemini não conseguiu gerar conteúdo para esta imagem.")
+                    json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+                    if not json_match:
+                        raise Exception(f"Gemini recusou a análise ou enviou formato inválido: {response.text[:100]}")
+                    return json.loads(json_match.group())
                 
                 else:
-                    st.error(f"Motor {engine} não configurado ou chave ausente.")
-                    return {}
+                    raise Exception(f"Motor {engine} não configurado ou chave ausente.")
 
             except Exception as e:
                 if "429" in str(e):
@@ -190,9 +189,8 @@ try:
                         st.warning(f"⏳ Limite atingido no {engine}. Aguardando 60s... ({attempt+1}/{retries})")
                         time.sleep(60)
                         continue
-                st.error(f"Erro na Visão {engine}: {e}")
-                # Don't return None, always return dict
-                if attempt == retries: return {}
+                if attempt == retries:
+                    raise e # Re-raise at the last attempt so the sync loop catches it
         return {}
 
     def get_storyboard_from_gemini(audio_path, script_text):
