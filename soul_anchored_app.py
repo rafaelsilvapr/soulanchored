@@ -166,18 +166,28 @@ try:
                         response_format={ "type": "json_object" }
                     )
                     content = response.choices[0].message.content
+                    refusal = getattr(response.choices[0].message, 'refusal', None)
+                    
+                    if refusal:
+                        raise Exception(f"OpenAI recusou por política de segurança: {refusal}")
                     if not content:
-                        raise Exception("OpenAI retornou conteúdo vazio (Filtro de Segurança?).")
+                        raise Exception("OpenAI retornou conteúdo vazio.")
                     return json.loads(content)
                 
                 elif engine == "Gemini" and gemini_model:
                     img = Image.open(image_path)
                     response = gemini_model.generate_content([prompt, img])
-                    if not response or not response.text:
-                        raise Exception("Gemini não conseguiu gerar conteúdo para esta imagem.")
+                    
+                    # Handle Gemini Safety Blocking
+                    if not response.candidates or not response.candidates[0].content.parts:
+                        raise Exception("Gemini bloqueou a imagem por motivos de segurança (Safety Filter).")
+                        
+                    if not response.text:
+                        raise Exception("Gemini não conseguiu gerar texto para esta imagem.")
+                        
                     json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
                     if not json_match:
-                        raise Exception(f"Gemini recusou a análise ou enviou formato inválido: {response.text[:100]}")
+                        raise Exception(f"Gemini enviou formato inválido.")
                     return json.loads(json_match.group())
                 
                 else:
@@ -317,17 +327,16 @@ try:
                                             raise Exception("FFmpeg: Arquivo pode estar corrompido ou é muito curto.")
                                 except Exception as e:
                                     failed_items.append({"file": f['name'], "error": str(e)})
-                                    consecutive_errors += 1
                                     st.warning(f"⚠️ Falha em {f['name']}: {e}")
                                 
                                 progress_bar.progress(idx / total)
-                                if consecutive_errors >= 5:
-                                    st.error("🚨 Muitas falhas seguidas (5+). O processo foi interrompido para economizar tokens.")
+                                if len(failed_items) >= 5:
+                                    st.error("🚨 Limite de 5 falhas atingido. O processo foi interrompido para economizar seus tokens e permitir revisão.")
                                     break
 
                             # Process Group 2 (Upgrade)
                             for f in group_2:
-                                if consecutive_errors >= 5: break
+                                if len(failed_items) >= 5: break
                                 idx += 1
                                 try:
                                     st.write(f"🆙 Fazendo Upgrade [{idx}/{total}]: {f['file_name']} ({vision_engine})")
@@ -340,7 +349,6 @@ try:
                                                     "tags": list(set((f.get('tags') or []) + [meta.get('acao'), meta.get('emocao')]))
                                                 }
                                                 supabase.table("video_library").update(data).eq("file_id", f['file_id']).execute()
-                                                consecutive_errors = 0
                                                 time.sleep(3 if vision_engine == "OpenAI" else 10) # Pacing
                                             else:
                                                 raise Exception("IA recusou ou enviou resposta vazia")
@@ -348,7 +356,6 @@ try:
                                             raise Exception("FFmpeg: Falha ao ler vídeo")
                                 except Exception as e:
                                     failed_items.append({"file": f['file_name'], "error": str(e)})
-                                    consecutive_errors += 1
                                     st.warning(f"⚠️ Falha em {f['file_name']}: {e}")
                                 progress_bar.progress(idx / total)
                             
