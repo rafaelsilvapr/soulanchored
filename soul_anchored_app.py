@@ -297,25 +297,32 @@ with tab1:
                         progress_bar.progress((i + 1) / num_segments)
 
                     if IS_CLOUD:
-                        # XML Generation for Cloud Download
-                        xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<xmeml version="5">
-    <project><name>{project_title}</name><children><sequence><name>Montagem</name><duration>{int(duration*30)}</duration><rate><timebase>30</timebase></rate><media><video><track>"""
-                        for i, clip in enumerate(selected_clips_data):
-                            start = i * 10 * 30
-                            frames = int(clip['duration'] * 30)
-                            xml_content += f"""<clipitem id="c-{i}"><name>{clip['name']}</name><duration>{frames}</duration><rate><timebase>30</timebase></rate><start>{start}</start><end>{start+frames}</end><in>0</in><out>{frames}</out><file id="f-{i}"><name>{clip['name']}</name><pathurl>file://./videos/{clip['name']}</pathurl></file></clipitem>"""
-                        xml_content += f"""</track></video><audio><track><clipitem id="a-1"><name>{audio_final_name}</name><duration>{int(duration*30)}</duration><rate><timebase>30</timebase></rate><start>0</start><end>{int(duration*30)}</end><in>0</in><out>{int(duration*30)}</out><file id="af-1"><name>{audio_final_name}</name><pathurl>file://./{audio_final_name}</pathurl></file></clipitem></track></audio></media></sequence></children></project></xmeml>"""
+                        # Cloud Mode: Create Native CapCut Structure inside ZIP
+                        draft_id = str(uuid.uuid4()).upper()
+                        # Use a local-relative path for the ZIP's internal structure
+                        meta_json = generate_draft_meta(project_title, draft_id, "./")
+                        
+                        # Fix paths for JSON to match ZIP structure
+                        audio_info = {"local_path": audio_final_name}
+                        cloud_clips = []
+                        for clip in selected_clips_data:
+                            cloud_clips.append({
+                                **clip,
+                                "local_path": f"videos/{clip['name']}"
+                            })
+                        
+                        content_json = generate_draft_content(project_title, cloud_clips, audio_info, duration)
                         
                         zip_buffer = io.BytesIO()
                         with zipfile.ZipFile(zip_buffer, "w") as zf:
-                            zf.writestr("montagem.xml", xml_content)
+                            zf.writestr("draft_meta.info", json.dumps(meta_json, indent=4))
+                            zf.writestr("draft_content.json", json.dumps(content_json, indent=4))
                             zf.write(audio_dest, audio_final_name)
                             for clip in selected_clips_data:
                                 zf.write(clip['local_path'], f"videos/{clip['name']}")
                         st.session_state['zip_data'] = zip_buffer.getvalue()
                     else:
-                        # Native Injection Files
+                        # Native Injection Files (Direct Local Disk)
                         draft_id = str(uuid.uuid4()).upper()
                         with open(os.path.join(work_path, "draft_meta.info"), "w", encoding="utf-8") as f:
                             json.dump(generate_draft_meta(project_title, draft_id, drafts_path), f, indent=4)
