@@ -72,7 +72,8 @@ try:
     def show_db_diagnostics():
         try:
             temp_supabase = get_supabase_client()
-            count_res = temp_supabase.table("video_library").select("id", count="exact").limit(1).execute()
+            # Changed 'id' to 'file_id' to match schema
+            count_res = temp_supabase.table("video_library").select("file_id", count="exact").limit(1).execute()
             st.sidebar.info(f"💾 BD Conectado: {SUPABASE_URL[:15]}...")
             st.sidebar.info(f"📊 Arquivos no Banco: {count_res.count if count_res.count is not None else 0}")
         except Exception as e:
