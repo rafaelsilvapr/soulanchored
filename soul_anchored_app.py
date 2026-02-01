@@ -4,6 +4,7 @@ import io
 import time
 import json
 import tempfile
+import uuid
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -14,20 +15,23 @@ from googleapiclient.discovery import build
 from supabase import create_client, Client
 import google.generativeai as genai
 
+# Streamlit Page Config MUST be the first call
+st.set_page_config(page_title="Soul Anchored - Cérebro Editorial", page_icon="🧠", layout="wide")
+
 # Configuration from Streamlit Secrets
 try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
     FOLDER_ID = st.secrets.get("FOLDER_ID", "15xna7XFA7W3liDawGjbHqpF7o4_nmo1e")
-except KeyError as e:
-    st.error(f"Configuração ausente nos Secrets: {e}")
+except Exception as e:
+    st.error(f"⚠️ Erro ao carregar segredos: {e}")
     st.stop()
 
 # Setup Gemini
 if GOOGLE_API_KEY:
     genai.configure(api_key=GOOGLE_API_KEY)
-    gemini_model = genai.GenerativeModel('gemini-2.0-flash')
+    gemini_model = genai.GenerativeModel('gemini-1.5-flash') # Using stable 1.5 flash for reliability
 else:
     gemini_model = None
 
@@ -56,56 +60,58 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def get_storyboard_from_gemini(audio_path, script_text):
-    """Uses Gemini to align script with audio in 10s increments."""
     if not gemini_model:
+        st.error("IA não configurada (API Key ausente).")
         return None
     
-    with st.status("Analizando áudio e roteiro com IA...", expanded=True) as status:
-        st.write("Enviando áudio para o Gemini...")
-        audio_file = genai.upload_file(path=audio_path)
-        
-        while audio_file.state.name == "PROCESSING":
-            time.sleep(2)
-            audio_file = genai.get_file(audio_file.name)
-            
-        prompt = f"""
-        Você é um Diretor de Montagem especializado em vídeos para redes sociais.
-        Analise este áudio de narração e o roteiro abaixo.
-        
-        OBJETIVO: Dividir o roteiro em blocos de 10 segundos baseando-se no RITMO real da narração (time-alignment).
-        
-        ROTEIRO:
-        {script_text}
-        
-        REGRAS DE OUTPUT:
-        Retorne um JSON puro (sem markdown) no seguinte formato:
-        [
-          {{
-            "timestamp": "00:00",
-            "script_fragment": "o texto exato dito entre 0 e 10s",
-            "visual_theme": "descrição curta do tema visual/ação para este trecho"
-          }},
-          ... (continuar a cada 10 segundos até o fim do áudio)
-        ]
-        """
-        
-        st.write("Sincronizando ritmo...")
-        response = gemini_model.generate_content([audio_file, prompt])
-        
-        # Cleanup
-        genai.delete_file(audio_file.name)
-        
+    with st.status("🧠 IA Analisando Áudio e Roteiro...", expanded=True) as status:
         try:
-            # Clean possible markdown formatting
-            clean_json = re.search(r'\[.*\]', response.text, re.DOTALL).group()
-            return json.loads(clean_json)
+            st.write("📤 Enviando narração...")
+            audio_file = genai.upload_file(path=audio_path)
+            
+            # Wait for processing
+            while audio_file.state.name == "PROCESSING":
+                time.sleep(2)
+                audio_file = genai.get_file(audio_file.name)
+            
+            if audio_file.state.name == "FAILED":
+                st.error("Falha no processamento do arquivo de áudio pela IA.")
+                return None
+
+            prompt = f"""
+            Você é um Diretor de Montagem Sênior. Sua tarefa é analisar o áudio de narração e o roteiro.
+            
+            OBJETIVO: Sincronizar o roteiro em blocos de 10 segundos baseando-se no ritmo real de fala.
+            
+            ROTEIRO A IDENTIFICAR:
+            {script_text}
+            
+            REGRAS:
+            1. Divida a cada 10s de áudio.
+            2. Extraia o trecho exato do roteiro falado nesse intervalo.
+            3. Defina um tema visual sugestivo.
+            4. Retorne APENAS um JSON puro (sem markdown) no formato:
+               [{{"timestamp": "00:00", "script_fragment": "...", "visual_theme": "..."}}]
+            """
+            
+            st.write("⚡ Sincronizando conteúdo...")
+            response = gemini_model.generate_content([audio_file, prompt])
+            
+            # Extract JSON string safely
+            json_match = re.search(r'\[.*\]', response.text, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                genai.delete_file(audio_file.name) # Cleanup
+                status.update(label="Sincronização concluída!", state="complete")
+                return result
+            else:
+                st.error("A IA retornou um formato inesperado.")
+                return None
         except Exception as e:
-            st.error(f"Erro ao processar resposta da IA: {e}")
+            st.error(f"Erro na análise multimodal: {e}")
             return None
 
-# --- UI Layout ---
-st.set_page_config(page_title="Soul Anchored - Cérebro Editorial", page_icon="🧠", layout="wide")
-
+# --- UI Header ---
 st.markdown("""
     <style>
     .stApp { background: linear-gradient(135deg, #07080c 0%, #11121d 100%); color: #e0e0e0; }
@@ -119,62 +125,62 @@ st.markdown("""
 st.title("Soul Anchored Assembler")
 st.subheader("Cérebro Editorial Multimodal 🧠🎙️")
 
-with st.sidebar:
-    st.header("📊 Status")
-    st.success("✅ Supabase Conectado")
-    st.info("💡 Este modo usa o Gemini para ouvir o seu áudio e alinhar o roteiro perfeitamente.")
-
-tab1, tab2 = st.tabs(["🚀 Roteiro de Montagem", "📂 Biblioteca"])
+tab1, tab2 = st.tabs(["🚀 Produção de Roteiro", "📂 Biblioteca"])
 
 with tab2:
     st.header("Biblioteca de Vídeos")
-    supabase = get_supabase_client()
-    res = supabase.table("video_library").select("file_name, tags, last_used_at").order("last_used_at", desc=True, nullsfirst=False).execute()
-    if res.data:
-        df_lib = pd.DataFrame(res.data)
-        st.dataframe(df_lib, use_container_width=True)
+    try:
+        supabase = get_supabase_client()
+        res = supabase.table("video_library").select("file_name, tags, last_used_at").order("last_used_at", desc=False, nullsfirst=True).execute()
+        if res.data:
+            df_lib = pd.DataFrame(res.data)
+            st.dataframe(df_lib, use_container_width=True)
+        else:
+            st.warning("Biblioteca vazia. Indexe arquivos primeiro.")
+    except Exception as e:
+        st.error(f"Erro ao conectar ao Supabase: {e}")
 
 with tab1:
     col1, col2 = st.columns([1, 1])
     with col1:
         project_title = st.text_input("Título do Projeto", value="Nova Montagem")
-        script_text = st.text_area("Roteiro Original", height=250, placeholder="Cole o roteiro completo aqui...")
+        script_text = st.text_area("Roteiro Original", height=250, placeholder="Cole o roteiro aqui...")
     
     with col2:
         audio_file = st.file_uploader("Upload de Áudio da Narração (.mp3/wav)", type=['mp3', 'wav'])
         if audio_file:
             st.audio(audio_file)
 
-    if script_text and audio_file:
-        if st.button("🧠 Gerar Storyboard (IA Multimodal)"):
+    if st.button("🧠 Gerar Storyboard Baseado no Áudio"):
+        if not script_text or not audio_file:
+            st.warning("Forneça o roteiro e o áudio para continuar.")
+        else:
             with tempfile.NamedTemporaryFile(delete=False, suffix=f".{audio_file.name.split('.')[-1]}") as tmp:
                 tmp.write(audio_file.getvalue())
                 tmp_path = tmp.name
             
-            gemini_storyboard = get_storyboard_from_gemini(tmp_path, script_text)
+            storyboard = get_storyboard_from_gemini(tmp_path, script_text)
+            os.remove(tmp_path)
             
-            if gemini_storyboard:
+            if storyboard:
+                # Video Matching logic
                 supabase = get_supabase_client()
-                
-                # Anti-Repetition
                 recent_res = supabase.table("video_library").select("file_id").order("last_used_at", desc=True).limit(5).execute()
-                recent_ids = [v['file_id'] for v in recent_res.data]
+                recent_ids = [v['file_id'] for v in (recent_res.data or [])]
                 
-                # Pool
-                pool_res = supabase.table("video_library").select("*").order("last_used_at", desc=False, nullsfirst=True).execute()
-                videos_pool = pool_res.data
+                all_videos = supabase.table("video_library").select("*").order("last_used_at", desc=False, nullsfirst=True).execute().data or []
                 
-                storyboard_final = []
-                used_in_this_session = []
-
-                for block in gemini_storyboard:
-                    desc_theme = block.get('visual_theme', '')
-                    # Combine original tags with AI theme for better matching
-                    tags_needed = [w.lower() for w in re.findall(r'\w{5,}', desc_theme + " " + block.get('script_fragment', ''))]
+                final_plan = []
+                session_used = []
+                
+                for block in storyboard:
+                    theme = block.get('visual_theme', '')
+                    script_chunk = block.get('script_fragment', '')
+                    tags_needed = [w.lower() for w in re.findall(r'\w{5,}', theme + " " + script_chunk)]
                     
+                    # Selection
+                    candidates = [v for v in all_videos if v['file_id'] not in recent_ids and v['file_id'] not in session_used]
                     best_match = None
-                    candidates = [v for v in videos_pool if v['file_id'] not in recent_ids and v['file_id'] not in used_in_this_session]
-                    
                     for v in candidates:
                         v_tags = [t.lower() for t in v.get('tags', [])]
                         if any(t in v_tags for t in tags_needed):
@@ -182,30 +188,27 @@ with tab1:
                     
                     if not best_match:
                         if candidates: best_match = candidates[0]
-                        else: best_match = videos_pool[0]
+                        elif all_videos: best_match = all_videos[0]
                     
-                    storyboard_final.append({
-                        "Tempo": block['timestamp'],
-                        "Trecho do Roteiro": block['script_fragment'],
-                        "TEMA IDENTIFICADO": desc_theme,
-                        "ARQUIVO SUGERIDO": f"🎬 {best_match['file_name']}",
-                        "file_id": best_match['file_id'],
-                        "file_name": best_match['file_name']
-                    })
-                    used_in_this_session.append(best_match['file_id'])
+                    if best_match:
+                        final_plan.append({
+                            "Tempo": block['timestamp'],
+                            "Texto": script_chunk,
+                            "Sugestão Visual": theme,
+                            "ARQUIVO": f"🎬 {best_match['file_name']}",
+                            "file_id": best_match['file_id'],
+                            "file_name": best_match['file_name']
+                        })
+                        session_used.append(best_match['file_id'])
+                
+                st.session_state['last_storyboard'] = final_plan
+                st.success("Storyboard gerado!")
 
-                st.session_state['current_storyboard'] = storyboard_final
-                st.success("Storyboard alinhado ao áudio com sucesso!")
-            
-            os.remove(tmp_path)
-
-    if 'current_storyboard' in st.session_state:
-        sb = st.session_state['current_storyboard']
-        df_sb = pd.DataFrame(sb)[["Tempo", "Trecho do Roteiro", "TEMA IDENTIFICADO", "ARQUIVO SUGERIDO"]]
-        
+    if 'last_storyboard' in st.session_state:
+        sb = st.session_state['last_storyboard']
         st.divider()
-        st.header("📋 Storyboard Técnico (IA Alinhada)")
-        st.table(df_sb)
+        st.header("📋 Tabela de Montagem Técnico")
+        st.table(pd.DataFrame(sb)[["Tempo", "Texto", "Sugestão Visual", "ARQUIVO"]])
         
         c1, c2 = st.columns(2)
         with c1:
@@ -215,53 +218,12 @@ with tab1:
                 for item in sb:
                     supabase.table("video_library").update({"last_used_at": now}).eq("file_id", item['file_id']).execute()
                 st.balloons()
-                st.success("🚀 Uso registrado! O sistema evitará estes arquivos nas próximas sugestões.")
-                del st.session_state['current_storyboard']
+                st.success("Uso registrado no banco!")
+                del st.session_state['last_storyboard']
                 st.rerun()
-
-        with c2:
-            txt_content = f"ROTEIRO TÉCNICO: {project_title}\n" + "="*30 + "\n\n"
-            for item in sb:
-                txt_content += f"[{item['Tempo']}] -> {item['file_name']}\n"
-            
-            st.download_button(
-                label="📲 Baixar Roteiro (WhatsApp/TXT)",
-                data=txt_content,
-                file_name=f"roteiro_{project_title.lower().replace(' ', '_')}.txt",
-                mime="text/plain",
-                use_container_width=True
-            )
-
-    if 'current_storyboard' in st.session_state:
-        sb = st.session_state['current_storyboard']
-        df_sb = pd.DataFrame(sb)[["Tempo", "Trecho do Roteiro", "ARQUIVO SUGERIDO"]]
         
-        st.divider()
-        st.header("📋 Tabela de Montagem")
-        st.table(df_sb)
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("✅ Confirmar Montagem e Registrar Uso", use_container_width=True):
-                supabase = get_supabase_client()
-                now = datetime.now().isoformat()
-                for item in sb:
-                    supabase.table("video_library").update({"last_used_at": now}).eq("file_id", item['file_id']).execute()
-                st.balloons()
-                st.success("🚀 Uso registrado! O sistema evitará estes arquivos nas próximas sugestões.")
-                del st.session_state['current_storyboard']
-                st.rerun()
-
         with c2:
-            # Generate TXT
-            txt_content = f"ROTEIRO TÉCNICO: {project_title}\n" + "="*30 + "\n\n"
+            txt = f"ROTEIRO TÉCNICO: {project_title}\n" + "="*30 + "\n"
             for item in sb:
-                txt_content += f"[{item['Tempo']}] -> {item['file_name']}\n"
-            
-            st.download_button(
-                label="📲 Baixar Roteiro (WhatsApp/TXT)",
-                data=txt_content,
-                file_name=f"roteiro_{project_title.lower().replace(' ', '_')}.txt",
-                mime="text/plain",
-                use_container_width=True
-            )
+                txt += f"[{item['Tempo']}] -> {item['file_name']}\n"
+            st.download_button("📲 Baixar TXT para WhatsApp", txt, file_name="roteiro.txt", use_container_width=True)
