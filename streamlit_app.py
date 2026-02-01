@@ -113,19 +113,25 @@ try:
 
     def extract_frame(service, file_id, output_path):
         try:
-            request = service.files().get_media(fileId=file_id)
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp:
-                downloader = MediaIoBaseDownload(tmp, request, chunksize=1024*1024*5)
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_video:
+                request = service.files().get_media(fileId=file_id)
+                downloader = MediaIoBaseDownload(tmp_video, request)
                 done = False
                 while not done:
-                    status, done = downloader.next_chunk()
-                    break # Get first 5MB
-                tmp_path = tmp.name
+                    _, done = downloader.next_chunk()
+                tmp_video_path = tmp_video.name
             
-            cmd = ['ffmpeg', '-y', '-ss', '00:00:02', '-i', tmp_path, '-vframes', '1', output_path]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-            os.remove(tmp_path)
-            return True
+            # Attempt 1: at 2 seconds
+            cmd = ['ffmpeg', '-y', '-ss', '00:00:02', '-i', tmp_video_path, '-vframes', '1', output_path]
+            res = subprocess.run(cmd, capture_output=True)
+            
+            if res.returncode != 0:
+                # Attempt 2: at 0 seconds (fallback for short/weird videos)
+                cmd = ['ffmpeg', '-y', '-ss', '00:00:00', '-i', tmp_video_path, '-vframes', '1', output_path]
+                res = subprocess.run(cmd, capture_output=True)
+            
+            os.unlink(tmp_video_path)
+            return res.returncode == 0
         except Exception as e:
             st.error(f"Erro ao extrair quadro: {e}")
             return False
@@ -306,24 +312,24 @@ try:
                                                 }
                                                 supabase.table("video_library").upsert(data).execute()
                                                 consecutive_errors = 0
-                                                time.sleep(5 if vision_engine == "OpenAI" else 10) # Pacing
+                                                time.sleep(3 if vision_engine == "OpenAI" else 10) # Pacing
                                             else:
-                                                raise Exception("IA retornou resposta vazia ou inválida.")
+                                                raise Exception("IA recusou ou enviou resposta vazia (Filtro de Segurança?)")
                                         else:
-                                            raise Exception("Falha ao extrair quadro (FFmpeg).")
+                                            raise Exception("FFmpeg: Arquivo pode estar corrompido ou é muito curto.")
                                 except Exception as e:
                                     failed_items.append({"file": f['name'], "error": str(e)})
                                     consecutive_errors += 1
                                     st.warning(f"⚠️ Falha em {f['name']}: {e}")
                                 
                                 progress_bar.progress(idx / total)
-                                if consecutive_errors >= 5:
-                                    st.error("🚨 Excesso de erros consecutivos. Considere trocar o Motor de Visão.")
+                                if consecutive_errors >= 20:
+                                    st.error("🚨 Muitas falhas seguidas (20+). O processo foi interrompido.")
                                     break
 
                             # Process Group 2 (Upgrade)
                             for f in group_2:
-                                if consecutive_errors >= 5: break
+                                if consecutive_errors >= 20: break
                                 idx += 1
                                 try:
                                     st.write(f"🆙 Fazendo Upgrade [{idx}/{total}]: {f['file_name']} ({vision_engine})")
@@ -337,11 +343,11 @@ try:
                                                 }
                                                 supabase.table("video_library").update(data).eq("file_id", f['file_id']).execute()
                                                 consecutive_errors = 0
-                                                time.sleep(5 if vision_engine == "OpenAI" else 10) # Pacing
+                                                time.sleep(3 if vision_engine == "OpenAI" else 10) # Pacing
                                             else:
-                                                raise Exception("IA retornou resposta vazia ou inválida.")
+                                                raise Exception("IA recusou ou enviou resposta vazia")
                                         else:
-                                            raise Exception("Falha ao extrair quadro (FFmpeg).")
+                                            raise Exception("FFmpeg: Falha ao ler vídeo")
                                 except Exception as e:
                                     failed_items.append({"file": f['file_name'], "error": str(e)})
                                     consecutive_errors += 1
