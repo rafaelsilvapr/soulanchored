@@ -486,6 +486,55 @@ try:
                     key="download_storyboard_btn",
                     use_container_width=True
                 )
+                
+                # --- NEW: Media Kit (ZIP) Export ---
+                if st.button("📦 Baixar Pasta do Vídeo (ZIP)", use_container_width=True, help="Baixa todos os vídeos e o roteiro em um único ZIP."):
+                    import zipfile
+                    import io
+                    
+                    service = get_drive_service()
+                    if not service:
+                        st.error("Erro ao acessar Google Drive.")
+                        st.stop()
+                        
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                        # 1. Add Script
+                        zip_file.writestr(f"roteiro_{project_title.replace(' ', '_')}.txt", sb_preview)
+                        
+                        # 2. Add Videos
+                        total_vids = len(sb)
+                        progress_text = st.empty()
+                        progress_bar = st.progress(0)
+                        
+                        for i, item in enumerate(sb):
+                            f_id = item.get('file_id')
+                            f_name = item.get('file_name', f"video_{i}.mp4")
+                            
+                            progress_text.text(f"📥 Baixando do Drive ({i+1}/{total_vids}): {f_name}")
+                            try:
+                                request = service.files().get_media(fileId=f_id)
+                                video_data = io.BytesIO()
+                                downloader = MediaIoBaseDownload(video_data, request)
+                                done = False
+                                while not done:
+                                    _, done = downloader.next_chunk()
+                                
+                                zip_file.writestr(f_name, video_data.getvalue())
+                            except Exception as vid_err:
+                                st.warning(f"⚠️ Erro ao baixar {f_name}: {vid_err}")
+                            
+                            progress_bar.progress((i + 1) / total_vids)
+                        
+                        progress_text.text("✅ ZIP pronto para download!")
+                        
+                    st.download_button(
+                        label="🔥 CLIQUE PARA SALVAR O ZIP",
+                        data=zip_buffer.getvalue(),
+                        file_name=f"Kit_{project_title.replace(' ', '_')}.zip",
+                        mime="application/zip",
+                        use_container_width=True
+                    )
             except Exception as e:
                 st.error(f"Erro ao preparar download: {e}")
 
