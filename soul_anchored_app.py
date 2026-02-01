@@ -471,9 +471,23 @@ try:
                     supabase.table("video_library").update({"last_used_at": now}).eq("file_id", item['file_id']).execute()
                 st.balloons(); st.success("Uso registrado!"); del st.session_state['last_storyboard']; st.rerun()
         with c2:
-            txt = f"ROTEIRO TÉCNICO: {project_title}\n" + "="*30 + "\n"
-            for item in sb: txt += f"[{item['Tempo']}] -> {item['file_name']} ({item['meta']})\n"
-            st.download_button("📲 Baixar roteiro para WhatsApp", txt, file_name="roteiro.txt", use_container_width=True)
+            try:
+                # Re-construct text content to ensure it's fresh and valid
+                sb_preview = f"ROTEIRO TÉCNICO: {project_title}\n" + "="*30 + "\n"
+                for item in sb: 
+                    sb_preview += f"[{item.get('Tempo', '00:00')}] -> {item.get('file_name', 'N/A')} ({item.get('meta', '')})\n"
+                
+                # Use a specific key and ensure proper encoding
+                st.download_button(
+                    label="📲 Baixar roteiro para WhatsApp",
+                    data=sb_preview,
+                    file_name=f"roteiro_{project_title.replace(' ', '_')}.txt",
+                    mime="text/plain",
+                    key="download_storyboard_btn",
+                    use_container_width=True
+                )
+            except Exception as e:
+                st.error(f"Erro ao preparar download: {e}")
 
 except Exception as e:
     st.error("❌ ERRO CRÍTICO"); st.exception(e); st.code(traceback.format_exc())
