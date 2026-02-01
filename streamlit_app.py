@@ -64,9 +64,22 @@ try:
     else:
         gemini_model = None
 
-    @st.cache_resource
+    # Remove cache to ensure fresh secrets are used after user updates them
     def get_supabase_client():
         return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+    # --- Utility Diagnostics ---
+    def show_db_diagnostics():
+        try:
+            temp_supabase = get_supabase_client()
+            count_res = temp_supabase.table("video_library").select("id", count="exact").limit(1).execute()
+            st.sidebar.info(f"💾 BD Conectado: {SUPABASE_URL[:15]}...")
+            st.sidebar.info(f"📊 Arquivos no Banco: {count_res.count if count_res.count is not None else 0}")
+        except Exception as e:
+            st.sidebar.error(f"❌ Erro de Conexão BD: {e}")
+
+    # Call diagnostics
+    show_db_diagnostics()
 
     # --- Google Drive Integration ---
     def get_drive_service():
