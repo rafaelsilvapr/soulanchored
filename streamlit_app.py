@@ -227,6 +227,14 @@ try:
     with tab2:
         st.header("Biblioteca de Vídeos")
         
+        # PERSISTENT ERRORS DISPLAY
+        if "sync_errors" in st.session_state and st.session_state.sync_errors:
+            with st.expander("📉 Relatório da Última Sincronização (FALHAS)", expanded=True):
+                st.table(st.session_state.sync_errors)
+                if st.button("Limpar Relatório"):
+                    st.session_state.sync_errors = []
+                    st.rerun()
+
         col_m1, col_m2 = st.columns([1, 2])
         with col_m1:
             vision_engine = st.radio("Motor de Visão (IA)", ["Gemini", "OpenAI"], help="Se o Gemini atingir o limite de cota, use o OpenAI (GPT-4o).")
@@ -234,6 +242,7 @@ try:
         col_btn1, col_btn2 = st.columns([1, 1])
         with col_btn1:
             if st.button("🔄 Sincronizar e Atualizar Biblioteca", use_container_width=True):
+                st.session_state.sync_errors = [] # Reset on new run
                 service = get_drive_service()
                 if service:
                     with st.status("🔍 Sincronizando com Google Drive...", expanded=True) as status:
@@ -253,7 +262,9 @@ try:
                         
                         # Identify Groups
                         group_1 = [f for f in drive_files if f['id'] not in db_ids]
-                        group_2 = [f for f in db_files if not f.get('acao') or not f.get('emocao')]
+                        
+                        # IMPROVED FILTER: Handle the 'None' strings seen in the screenshot
+                        group_2 = [f for f in db_files if not f.get('acao') or f.get('acao') == 'None' or not f.get('emocao') or f.get('emocao') == 'None']
                         
                         total = len(group_1) + len(group_2)
                         st.write(f"📊 **Resumo da Varredura:** ({vision_engine})")
@@ -337,12 +348,11 @@ try:
                                     st.warning(f"⚠️ Falha em {f['file_name']}: {e}")
                                 progress_bar.progress(idx / total)
                             
-                            st.success(f"✅ Sincronização Finalizada! {idx - len(failed_items)} processados.")
+                            st.session_state.sync_errors = failed_items
                             if failed_items:
-                                with st.expander("📉 Relatório de Falhas (Clique para ver detalhes)", expanded=True):
-                                    st.table(failed_items)
-                                    st.info("💡 Dica: Vídeos que falham com 'Safety Filter' ou 'None' podem conter conteúdo que a IA recusa analisar.")
-                            st.rerun()
+                                st.error(f"Sincronização Finalizada com {len(failed_items)} falhas.")
+                            else:
+                                st.success(f"✅ Sincronização Finalizada com Sucesso!")
 
         res = supabase.table("video_library").select("*").order("file_name", desc=False).execute()
         if res.data:
