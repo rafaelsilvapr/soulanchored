@@ -39,8 +39,13 @@ try:
 
     # Setup Gemini
     if GOOGLE_API_KEY:
-        genai.configure(api_key=GOOGLE_API_KEY)
-        gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+        try:
+            genai.configure(api_key=GOOGLE_API_KEY)
+            # Standard stable name
+            gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+        except Exception as e:
+            st.error(f"Erro ao configurar Gemini: {e}")
+            gemini_model = None
     else:
         gemini_model = None
 
