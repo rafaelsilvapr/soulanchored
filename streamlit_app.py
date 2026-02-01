@@ -392,7 +392,14 @@ try:
                 os.remove(tmp_path)
                 
                 if storyboard:
-                    all_videos = supabase.table("video_library").select("*").order("last_used_at", desc=False, nullsfirst=True).execute().data or []
+                    # Filter for indexed videos only
+                    raw_videos = supabase.table("video_library").select("*").order("last_used_at", desc=False, nullsfirst=True).execute().data or []
+                    all_videos = [v for v in raw_videos if v.get('acao') and v.get('acao') != 'None' and v.get('emocao') and v.get('emocao') != 'None']
+                    
+                    if not all_videos:
+                        st.error("⚠️ NENHUM VÍDEO INDEXADO ENCONTRADO. Por favor, sincronize a biblioteca primeiro.")
+                        return
+                    
                     recent_ids = set([v['file_id'] for v in sorted(all_videos, key=lambda x: x.get('last_used_at') or '', reverse=True)[:10]])
                     
                     final_plan = []
