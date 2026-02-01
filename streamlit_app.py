@@ -323,13 +323,13 @@ try:
                                     st.warning(f"⚠️ Falha em {f['name']}: {e}")
                                 
                                 progress_bar.progress(idx / total)
-                                if consecutive_errors >= 20:
-                                    st.error("🚨 Muitas falhas seguidas (20+). O processo foi interrompido.")
+                                if consecutive_errors >= 5:
+                                    st.error("🚨 Muitas falhas seguidas (5+). O processo foi interrompido para economizar tokens.")
                                     break
 
                             # Process Group 2 (Upgrade)
                             for f in group_2:
-                                if consecutive_errors >= 20: break
+                                if consecutive_errors >= 5: break
                                 idx += 1
                                 try:
                                     st.write(f"🆙 Fazendo Upgrade [{idx}/{total}]: {f['file_name']} ({vision_engine})")
