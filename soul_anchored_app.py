@@ -137,7 +137,9 @@ try:
             response = gemini_model.generate_content([prompt, img])
             json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
             return json.loads(json_match.group()) if json_match else {}
-        except Exception: return {}
+        except Exception as e:
+            st.error(f"Erro na Visão IA: {e}")
+            return {}
 
     def get_storyboard_from_gemini(audio_path, script_text):
         if not gemini_model: return None
@@ -190,18 +192,25 @@ try:
                         db_files = supabase.table("video_library").select("*").execute().data or []
                         db_ids = {f['file_id'] for f in db_files}
                         
-                        # Sequential naming help
-                        existing_names = [f['file_name'] for f in db_files if f['file_name'].split('.')[0].isdigit()]
-                        last_num = max([int(n.split('.')[0]) for n in existing_names]) if existing_names else 0
-                        
                         # Identify Groups
                         group_1 = [f for f in drive_files if f['id'] not in db_ids]
                         group_2 = [f for f in db_files if not f.get('acao') or not f.get('emocao')]
                         
                         total = len(group_1) + len(group_2)
+                        st.write(f"📊 **Resumo da Varredura:**")
+                        st.write(f"- Arquivos no Drive: {len(drive_files)}")
+                        st.write(f"- Arquivos no Banco: {len(db_files)}")
+                        st.write(f"- 🆕 Novos para indexar (Grupo 1): {len(group_1)}")
+                        st.write(f"- 🆙 Para upgrade de IA (Grupo 2): {len(group_2)}")
+
                         if total == 0:
-                            st.info("Biblioteca já está atualizada.")
+                            st.info("Biblioteca já está 100% atualizada com metadados de IA.")
                         else:
+                            # Sequential naming help
+                            existing_names = [f['file_name'] for f in db_files if f['file_name'] and f['file_name'].split('.')[0].isdigit()]
+                            last_num = max([int(n.split('.')[0]) for n in existing_names]) if existing_names else 0
+                            
+                            st.write(f"🚀 Iniciando processamento de {total} itens...")
                             progress_bar = st.progress(0)
                             idx = 0
                             
