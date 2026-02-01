@@ -206,41 +206,46 @@ try:
     def get_semantic_storyboard(audio_path, script_text, engine="Gemini"):
         with st.status(f"🧠 {engine} Analisando Conteúdo...", expanded=True) as status:
             try:
-                prompt = f"""
-                Você é um Diretor de Montagem Sênior. Sua tarefa é analisar o roteiro e sugerir a divisão visual.
-                OBJETIVO: Sincronizar o roteiro em blocos de aproximadamente 10 segundos.
+                prompt_base = f"""
+                Você é um Diretor de Montagem Sênior. Sua tarefa é analisar o ROTEIRO COMPLETO e dividi-lo em blocos visuais.
+                OBJETIVO: Sincronizar o texto em blocos de aproximadamente 10 segundos, sem pular nenhuma frase.
+                
                 ROTEIRO: {script_text}
+                
                 Retorne APENAS um JSON puro no formato:
-                [{{"timestamp": "00:00", "script_fragment": "...", "visual_theme": "...", "emocao_alvo": "..."}}]
+                {{ "storyboard": [
+                    {{"timestamp": "00:00", "script_fragment": "...", "visual_theme": "...", "emocao_alvo": "..."}},
+                    ...
+                ]}}
                 """
 
                 if engine == "Gemini" and gemini_model:
-                    st.write("📤 Enviando narração para o Gemini...")
+                    st.write("📤 Enviando narração para o Gemini (Sincronia por Áudio)...")
                     audio_file = genai.upload_file(path=audio_path)
                     while audio_file.state.name == "PROCESSING":
                         time.sleep(2)
                         audio_file = genai.get_file(audio_file.name)
                         
                     st.write("⚡ Sincronizando conteúdo no Gemini...")
-                    response = gemini_model.generate_content([audio_file, prompt])
-                    json_match = re.search(r'\[.*\]', response.text, re.DOTALL)
-                    res = json.loads(json_match.group()) if json_match else None
+                    # For Gemini, we add the audio to the prompt
+                    response = gemini_model.generate_content([audio_file, f"Analise este áudio e use-o para medir os tempos reais. {prompt_base}"])
+                    json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+                    data = json.loads(json_match.group()) if json_match else {}
+                    res = data.get('storyboard') if isinstance(data, dict) else data
                     genai.delete_file(audio_file.name)
-                    return res
+                    return res if isinstance(res, list) else None
 
                 elif engine == "OpenAI" and client_openai:
-                    st.write("⚡ Gerando Storyboard no OpenAI (Baseado em Texto)...")
-                    # Note: OpenAI standard models don't take long audio files directly as easily as Gemini.
-                    # We will use text-based storyboard generation for the OpenAI fallback.
+                    st.write("⚡ Gerando Storyboard no OpenAI (Estimativa por Texto)...")
                     response = client_openai.chat.completions.create(
                         model="gpt-4o",
-                        messages=[{"role": "user", "content": prompt}],
+                        messages=[{"role": "user", "content": prompt_base}],
                         response_format={ "type": "json_object" }
                     )
                     content = response.choices[0].message.content
-                    # GPT-4o might return a single object or an array. We need a list.
                     data = json.loads(content)
-                    return data.get('storyboard') if isinstance(data, dict) and 'storyboard' in data else (data if isinstance(data, list) else [data])
+                    res = data.get('storyboard') if isinstance(data, dict) else data
+                    return res if isinstance(res, list) else None
 
                 else:
                     st.error(f"Motor {engine} não configurado.")
