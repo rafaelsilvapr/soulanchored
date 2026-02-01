@@ -203,31 +203,50 @@ try:
                     raise e # Re-raise at the last attempt so the sync loop catches it
         return {}
 
-    def get_storyboard_from_gemini(audio_path, script_text):
-        if not gemini_model: return None
-        with st.status("🧠 IA Analisando Áudio e Roteiro...", expanded=True) as status:
+    def get_semantic_storyboard(audio_path, script_text, engine="Gemini"):
+        with st.status(f"🧠 {engine} Analisando Conteúdo...", expanded=True) as status:
             try:
-                st.write("📤 Enviando narração...")
-                audio_file = genai.upload_file(path=audio_path)
-                while audio_file.state.name == "PROCESSING":
-                    time.sleep(2)
-                    audio_file = genai.get_file(audio_file.name)
-                
                 prompt = f"""
-                Você é um Diretor de Montagem Sênior. Sua tarefa é analisar o áudio de narração e o roteiro.
-                OBJETIVO: Sincronizar o roteiro em blocos de 10 segundos baseando-se no ritmo real de fala.
+                Você é um Diretor de Montagem Sênior. Sua tarefa é analisar o roteiro e sugerir a divisão visual.
+                OBJETIVO: Sincronizar o roteiro em blocos de aproximadamente 10 segundos.
                 ROTEIRO: {script_text}
                 Retorne APENAS um JSON puro no formato:
                 [{{"timestamp": "00:00", "script_fragment": "...", "visual_theme": "...", "emocao_alvo": "..."}}]
                 """
-                st.write("⚡ Sincronizando conteúdo...")
-                response = gemini_model.generate_content([audio_file, prompt])
-                json_match = re.search(r'\[.*\]', response.text, re.DOTALL)
-                res = json.loads(json_match.group()) if json_match else None
-                genai.delete_file(audio_file.name)
-                return res
+
+                if engine == "Gemini" and gemini_model:
+                    st.write("📤 Enviando narração para o Gemini...")
+                    audio_file = genai.upload_file(path=audio_path)
+                    while audio_file.state.name == "PROCESSING":
+                        time.sleep(2)
+                        audio_file = genai.get_file(audio_file.name)
+                        
+                    st.write("⚡ Sincronizando conteúdo no Gemini...")
+                    response = gemini_model.generate_content([audio_file, prompt])
+                    json_match = re.search(r'\[.*\]', response.text, re.DOTALL)
+                    res = json.loads(json_match.group()) if json_match else None
+                    genai.delete_file(audio_file.name)
+                    return res
+
+                elif engine == "OpenAI" and client_openai:
+                    st.write("⚡ Gerando Storyboard no OpenAI (Baseado em Texto)...")
+                    # Note: OpenAI standard models don't take long audio files directly as easily as Gemini.
+                    # We will use text-based storyboard generation for the OpenAI fallback.
+                    response = client_openai.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[{"role": "user", "content": prompt}],
+                        response_format={ "type": "json_object" }
+                    )
+                    content = response.choices[0].message.content
+                    # GPT-4o might return a single object or an array. We need a list.
+                    data = json.loads(content)
+                    return data.get('storyboard') if isinstance(data, dict) and 'storyboard' in data else (data if isinstance(data, list) else [data])
+
+                else:
+                    st.error(f"Motor {engine} não configurado.")
+                    return None
             except Exception as e:
-                st.error(f"Erro na análise: {e}")
+                st.error(f"Erro na análise ({engine}): {e}")
                 return None
 
     # --- Main App Interface ---
@@ -380,6 +399,7 @@ try:
             script_text = st.text_area("Roteiro Original", height=250, placeholder="Cole o roteiro...")
         with col2:
             audio_in = st.file_uploader("Upload de Áudio", type=['mp3', 'wav'])
+            story_engine = st.radio("Motor de Geração", ["Gemini", "OpenAI"], index=0, horizontal=True, help="Use OpenAI se o Gemini estiver fora de cota.")
             if audio_in: st.audio(audio_in)
 
         if st.button("🧠 Gerar Storyboard Semântico"):
@@ -388,7 +408,7 @@ try:
             else:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=f".{audio_in.name.split('.')[-1]}") as tmp:
                     tmp.write(audio_in.getvalue()); tmp_path = tmp.name
-                storyboard = get_storyboard_from_gemini(tmp_path, script_text)
+                storyboard = get_semantic_storyboard(tmp_path, script_text, engine=story_engine)
                 os.remove(tmp_path)
                 
                 if storyboard:
