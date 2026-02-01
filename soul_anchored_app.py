@@ -234,7 +234,10 @@ try:
         res = supabase.table("video_library").select("*").order("file_name", desc=False).execute()
         if res.data:
             df = pd.DataFrame(res.data)
-            st.dataframe(df[["file_name", "acao", "emocao", "descricao", "last_used_at"]], use_container_width=True)
+            # Only show columns that exist in the DB
+            display_cols = ["file_name", "acao", "emocao", "descricao", "last_used_at"]
+            available_cols = [c for c in display_cols if c in df.columns]
+            st.dataframe(df[available_cols], use_container_width=True)
 
     with tab1:
         col1, col2 = st.columns([1, 1])
