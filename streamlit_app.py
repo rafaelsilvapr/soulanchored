@@ -398,7 +398,7 @@ try:
                     
                     if not all_videos:
                         st.error("⚠️ NENHUM VÍDEO INDEXADO ENCONTRADO. Por favor, sincronize a biblioteca primeiro.")
-                        return
+                        st.stop()
                     
                     recent_ids = set([v['file_id'] for v in sorted(all_videos, key=lambda x: x.get('last_used_at') or '', reverse=True)[:10]])
                     
