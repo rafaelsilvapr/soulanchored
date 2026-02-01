@@ -43,6 +43,7 @@ try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+    OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY")
     FOLDER_ID = st.secrets.get("FOLDER_ID", "15xna7XFA7W3liDawGjbHqpF7o4_nmo1e")
 
     # Setup Gemini
@@ -54,15 +55,23 @@ try:
             selected_model = next((p for p in preferred if p in available_models), available_models[0] if available_models else None)
             if selected_model:
                 gemini_model = genai.GenerativeModel(selected_model)
-                st.sidebar.success(f"IA Ativa: {selected_model}")
+                st.sidebar.success(f"IA Gemini Ativa: {selected_model}")
             else:
-                st.error("Nenhum modelo compatível encontrado.")
                 gemini_model = None
         except Exception as e:
-            st.error(f"Erro ao configurar Gemini: {e}")
+            st.sidebar.error(f"Erro Gemini: {e}")
             gemini_model = None
     else:
         gemini_model = None
+
+    # Setup OpenAI
+    if OPENAI_API_KEY:
+        from openai import OpenAI
+        import base64
+        client_openai = OpenAI(api_key=OPENAI_API_KEY)
+        st.sidebar.success("IA OpenAI Ativa: gpt-4o")
+    else:
+        client_openai = None
 
     # Remove cache to ensure fresh secrets are used after user updates them
     def get_supabase_client():
@@ -121,26 +130,54 @@ try:
             st.error(f"Erro ao extrair quadro: {e}")
             return False
 
-    def analyze_vision(image_path, retries=2):
-        if not gemini_model: return {}
+    def encode_image(image_path):
+        import base64
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
+
+    def analyze_vision(image_path, engine="Gemini", retries=1):
+        prompt = """
+        Analise este vídeo para um sistema de montagem de vídeos de fé.
+        Identifique: 1. Ação Principal, 2. Emoção Predominante, 3. Descrição Visual.
+        Retorne APENAS JSON: {"acao": "...", "emocao": "...", "descricao": "..."}
+        """
+        
         for attempt in range(retries + 1):
             try:
-                img = Image.open(image_path)
-                prompt = """
-                Analise este vídeo para um sistema de montagem de vídeos de fé.
-                Identifique: 1. Ação Principal, 2. Emoção Predominante, 3. Descrição Visual.
-                Retorne APENAS JSON: {"acao": "...", "emocao": "...", "descricao": "..."}
-                """
-                response = gemini_model.generate_content([prompt, img])
-                json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
-                return json.loads(json_match.group()) if json_match else {}
+                if engine == "OpenAI" and client_openai:
+                    base64_image = encode_image(image_path)
+                    response = client_openai.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt},
+                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                                ],
+                            }
+                        ],
+                        response_format={ "type": "json_object" }
+                    )
+                    return json.loads(response.choices[0].message.content)
+                
+                elif engine == "Gemini" and gemini_model:
+                    img = Image.open(image_path)
+                    response = gemini_model.generate_content([prompt, img])
+                    json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+                    return json.loads(json_match.group()) if json_match else {}
+                
+                else:
+                    st.error(f"Motor {engine} não configurado.")
+                    return {}
+
             except Exception as e:
                 if "429" in str(e):
                     if attempt < retries:
-                        st.warning(f"⏳ Limite atingido. Aguardando 60s para tentar novamente ({attempt+1}/{retries})...")
+                        st.warning(f"⏳ Limite atingido no {engine}. Aguardando 60s... ({attempt+1}/{retries})")
                         time.sleep(60)
                         continue
-                st.error(f"Erro na Visão IA: {e}")
+                st.error(f"Erro na Visão {engine}: {e}")
                 return {}
         return {}
 
@@ -181,6 +218,11 @@ try:
 
     with tab2:
         st.header("Biblioteca de Vídeos")
+        
+        col_m1, col_m2 = st.columns([1, 2])
+        with col_m1:
+            vision_engine = st.radio("Motor de Visão (IA)", ["Gemini", "OpenAI"], help="Se o Gemini atingir o limite de cota, use o OpenAI (GPT-4o).")
+        
         col_btn1, col_btn2 = st.columns([1, 1])
         with col_btn1:
             if st.button("🔄 Sincronizar e Atualizar Biblioteca", use_container_width=True):
@@ -206,20 +248,20 @@ try:
                         group_2 = [f for f in db_files if not f.get('acao') or not f.get('emocao')]
                         
                         total = len(group_1) + len(group_2)
-                        st.write(f"📊 **Resumo da Varredura:**")
+                        st.write(f"📊 **Resumo da Varredura:** ({vision_engine})")
                         st.write(f"- Arquivos no Drive: {len(drive_files)}")
                         st.write(f"- Arquivos no Banco: {len(db_files)}")
                         st.write(f"- 🆕 Novos para indexar (Grupo 1): {len(group_1)}")
                         st.write(f"- 🆙 Para upgrade de IA (Grupo 2): {len(group_2)}")
 
                         if total == 0:
-                            st.info("Biblioteca já está 100% atualizada com metadados de IA.")
+                            st.info(f"Biblioteca já está 100% atualizada com metadados de {vision_engine}.")
                         else:
                             # Sequential naming help
                             existing_names = [f['file_name'] for f in db_files if f['file_name'] and f['file_name'].split('.')[0].isdigit()]
                             last_num = max([int(n.split('.')[0]) for n in existing_names]) if existing_names else 0
                             
-                            st.write(f"🚀 Iniciando processamento de {total} itens...")
+                            st.write(f"🚀 Iniciando processamento de {total} itens via {vision_engine}...")
                             progress_bar = st.progress(0)
                             idx = 0
                             
@@ -228,12 +270,12 @@ try:
                                 idx += 1
                                 last_num += 1
                                 new_name = f"{last_num:04d}.mp4"
-                                st.write(f"🆕 Indexando [{idx}/{total}]: {f['name']} -> {new_name}")
+                                st.write(f"🆕 Indexando [{idx}/{total}]: {f['name']} -> {new_name} ({vision_engine})")
                                 service.files().update(fileId=f['id'], body={'name': new_name}).execute()
                                 
                                 with tempfile.NamedTemporaryFile(suffix='.jpg') as tmp_img:
                                     if extract_frame(service, f['id'], tmp_img.name):
-                                        meta = analyze_vision(tmp_img.name)
+                                        meta = analyze_vision(tmp_img.name, engine=vision_engine)
                                         if meta:
                                             data = {
                                                 "file_id": f['id'], "file_name": new_name, "drive_link": f['webViewLink'],
@@ -241,24 +283,23 @@ try:
                                                 "tags": [meta.get('acao'), meta.get('emocao')]
                                             }
                                             supabase.table("video_library").upsert(data).execute()
-                                            time.sleep(10) # Pacing
-                                
+                                            time.sleep(5 if vision_engine == "OpenAI" else 10) # Pacing
                                 progress_bar.progress(idx / total)
 
                             # Process Group 2 (Upgrade)
                             for f in group_2:
                                 idx += 1
-                                st.write(f"🆙 Fazendo Upgrade [{idx}/{total}]: {f['file_name']}")
+                                st.write(f"🆙 Fazendo Upgrade [{idx}/{total}]: {f['file_name']} ({vision_engine})")
                                 with tempfile.NamedTemporaryFile(suffix='.jpg') as tmp_img:
                                     if extract_frame(service, f['file_id'], tmp_img.name):
-                                        meta = analyze_vision(tmp_img.name)
+                                        meta = analyze_vision(tmp_img.name, engine=vision_engine)
                                         if meta:
                                             data = {
                                                 "acao": meta.get('acao'), "emocao": meta.get('emocao'), "descricao": meta.get('descricao'),
                                                 "tags": list(set((f.get('tags') or []) + [meta.get('acao'), meta.get('emocao')]))
                                             }
                                             supabase.table("video_library").update(data).eq("file_id", f['file_id']).execute()
-                                            time.sleep(10) # Pacing
+                                            time.sleep(5 if vision_engine == "OpenAI" else 10) # Pacing
                                 progress_bar.progress(idx / total)
                             
                             st.success("✅ Sincronização Concluída!")
