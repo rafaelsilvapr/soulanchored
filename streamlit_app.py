@@ -272,45 +272,76 @@ try:
                             st.write(f"🚀 Iniciando processamento de {total} itens via {vision_engine}...")
                             progress_bar = st.progress(0)
                             idx = 0
+                            failed_items = []
+                            consecutive_errors = 0
                             
                             # Process Group 1 (New)
                             for f in group_1:
                                 idx += 1
                                 last_num += 1
                                 new_name = f"{last_num:04d}.mp4"
-                                st.write(f"🆕 Indexando [{idx}/{total}]: {f['name']} -> {new_name} ({vision_engine})")
-                                service.files().update(fileId=f['id'], body={'name': new_name}).execute()
+                                try:
+                                    st.write(f"🆕 Indexando [{idx}/{total}]: {f['name']} -> {new_name}")
+                                    service.files().update(fileId=f['id'], body={'name': new_name}).execute()
+                                    
+                                    with tempfile.NamedTemporaryFile(suffix='.jpg') as tmp_img:
+                                        if extract_frame(service, f['id'], tmp_img.name):
+                                            meta = analyze_vision(tmp_img.name, engine=vision_engine)
+                                            if meta:
+                                                data = {
+                                                    "file_id": f['id'], "file_name": new_name, "drive_link": f['webViewLink'],
+                                                    "acao": meta.get('acao'), "emocao": meta.get('emocao'), "descricao": meta.get('descricao'),
+                                                    "tags": [meta.get('acao'), meta.get('emocao')]
+                                                }
+                                                supabase.table("video_library").upsert(data).execute()
+                                                consecutive_errors = 0
+                                                time.sleep(5 if vision_engine == "OpenAI" else 10) # Pacing
+                                            else:
+                                                raise Exception("IA retornou resposta vazia ou inválida.")
+                                        else:
+                                            raise Exception("Falha ao extrair quadro (FFmpeg).")
+                                except Exception as e:
+                                    failed_items.append({"file": f['name'], "error": str(e)})
+                                    consecutive_errors += 1
+                                    st.warning(f"⚠️ Falha em {f['name']}: {e}")
                                 
-                                with tempfile.NamedTemporaryFile(suffix='.jpg') as tmp_img:
-                                    if extract_frame(service, f['id'], tmp_img.name):
-                                        meta = analyze_vision(tmp_img.name, engine=vision_engine)
-                                        if meta:
-                                            data = {
-                                                "file_id": f['id'], "file_name": new_name, "drive_link": f['webViewLink'],
-                                                "acao": meta.get('acao'), "emocao": meta.get('emocao'), "descricao": meta.get('descricao'),
-                                                "tags": [meta.get('acao'), meta.get('emocao')]
-                                            }
-                                            supabase.table("video_library").upsert(data).execute()
-                                            time.sleep(5 if vision_engine == "OpenAI" else 10) # Pacing
                                 progress_bar.progress(idx / total)
+                                if consecutive_errors >= 5:
+                                    st.error("🚨 Excesso de erros consecutivos. Considere trocar o Motor de Visão.")
+                                    break
 
                             # Process Group 2 (Upgrade)
                             for f in group_2:
+                                if consecutive_errors >= 5: break
                                 idx += 1
-                                st.write(f"🆙 Fazendo Upgrade [{idx}/{total}]: {f['file_name']} ({vision_engine})")
-                                with tempfile.NamedTemporaryFile(suffix='.jpg') as tmp_img:
-                                    if extract_frame(service, f['file_id'], tmp_img.name):
-                                        meta = analyze_vision(tmp_img.name, engine=vision_engine)
-                                        if meta:
-                                            data = {
-                                                "acao": meta.get('acao'), "emocao": meta.get('emocao'), "descricao": meta.get('descricao'),
-                                                "tags": list(set((f.get('tags') or []) + [meta.get('acao'), meta.get('emocao')]))
-                                            }
-                                            supabase.table("video_library").update(data).eq("file_id", f['file_id']).execute()
-                                            time.sleep(5 if vision_engine == "OpenAI" else 10) # Pacing
+                                try:
+                                    st.write(f"🆙 Fazendo Upgrade [{idx}/{total}]: {f['file_name']} ({vision_engine})")
+                                    with tempfile.NamedTemporaryFile(suffix='.jpg') as tmp_img:
+                                        if extract_frame(service, f['file_id'], tmp_img.name):
+                                            meta = analyze_vision(tmp_img.name, engine=vision_engine)
+                                            if meta:
+                                                data = {
+                                                    "acao": meta.get('acao'), "emocao": meta.get('emocao'), "descricao": meta.get('descricao'),
+                                                    "tags": list(set((f.get('tags') or []) + [meta.get('acao'), meta.get('emocao')]))
+                                                }
+                                                supabase.table("video_library").update(data).eq("file_id", f['file_id']).execute()
+                                                consecutive_errors = 0
+                                                time.sleep(5 if vision_engine == "OpenAI" else 10) # Pacing
+                                            else:
+                                                raise Exception("IA retornou resposta vazia ou inválida.")
+                                        else:
+                                            raise Exception("Falha ao extrair quadro (FFmpeg).")
+                                except Exception as e:
+                                    failed_items.append({"file": f['file_name'], "error": str(e)})
+                                    consecutive_errors += 1
+                                    st.warning(f"⚠️ Falha em {f['file_name']}: {e}")
                                 progress_bar.progress(idx / total)
                             
-                            st.success("✅ Sincronização Concluída!")
+                            st.success(f"✅ Sincronização Finalizada! {idx - len(failed_items)} processados.")
+                            if failed_items:
+                                with st.expander("📉 Relatório de Falhas (Clique para ver detalhes)", expanded=True):
+                                    st.table(failed_items)
+                                    st.info("💡 Dica: Vídeos que falham com 'Safety Filter' ou 'None' podem conter conteúdo que a IA recusa analisar.")
                             st.rerun()
 
         res = supabase.table("video_library").select("*").order("file_name", desc=False).execute()
