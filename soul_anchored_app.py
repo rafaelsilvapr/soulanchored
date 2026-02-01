@@ -4,8 +4,9 @@ import io
 import time
 import tempfile
 import subprocess
-import zipfile
 import json
+import uuid
+import shutil
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -75,8 +76,79 @@ def download_file_from_drive(service, file_id, destination):
         status, done = downloader.next_chunk()
     return True
 
+def generate_draft_meta(project_name, draft_id, drafts_path):
+    now_ms = int(time.time() * 1000 * 1000)
+    meta = {
+        "draft_name": project_name,
+        "draft_id": draft_id,
+        "draft_root_path": drafts_path,
+        "create_time": now_ms,
+        "update_time": now_ms,
+        "draft_type": 0,
+        "draft_version": "1.0",
+        "save_location": 0
+    }
+    return meta
+
+def generate_draft_content(project_name, clips, audio_info, duration_s):
+    # CapCut uses microseconds (ms * 1000) for time, and 10^6 for seconds
+    FPS = 30
+    US_PER_S = 1000000
+    
+    materials = {"videos": [], "audios": []}
+    v_track_segments = []
+    a_track_segments = []
+    
+    # Audio Material & Segment
+    a_id = str(uuid.uuid4()).upper()
+    materials["audios"].append({
+        "id": a_id,
+        "path": audio_info['local_path'],
+        "duration": int(duration_s * US_PER_S),
+        "type": "audio"
+    })
+    
+    a_track_segments.append({
+        "id": str(uuid.uuid4()).upper(),
+        "material_id": a_id,
+        "target_timerange": {"start": 0, "duration": int(duration_s * US_PER_S)},
+        "source_timerange": {"start": 0, "duration": int(duration_s * US_PER_S)},
+        "type": "audio"
+    })
+    
+    # Video Clips
+    for i, clip in enumerate(clips):
+        v_id = str(uuid.uuid4()).upper()
+        materials["videos"].append({
+            "id": v_id,
+            "path": clip['local_path'],
+            "duration": int(clip['duration'] * US_PER_S),
+            "type": "video"
+        })
+        
+        # Every video starts at index * 10s
+        target_start = i * 10 * US_PER_S
+        v_track_segments.append({
+            "id": str(uuid.uuid4()).upper(),
+            "material_id": v_id,
+            "target_timerange": {"start": target_start, "duration": int(clip['duration'] * US_PER_S)},
+            "source_timerange": {"start": 0, "duration": int(clip['duration'] * US_PER_S)},
+            "type": "video"
+        })
+        
+    content = {
+        "materials": materials,
+        "tracks": [
+            {"id": str(uuid.uuid4()).upper(), "type": "video", "segments": v_track_segments},
+            {"id": str(uuid.uuid4()).upper(), "type": "audio", "segments": a_track_segments}
+        ],
+        "canvas_config": {"width": 1080, "height": 1920},
+        "fps": FPS
+    }
+    return content
+
 # --- UI Layout ---
-st.set_page_config(page_title="Soul Anchored Montage App", page_icon="🎬", layout="wide")
+st.set_page_config(page_title="Soul Anchored Assembler", page_icon="🎬", layout="wide")
 
 # Custom CSS
 st.markdown("""
@@ -88,16 +160,20 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("Soul Anchored Montage App")
-st.subheader("Cloud Edition ☁️")
+st.title("Soul Anchored Assembler")
+st.subheader("Native Draft Injection 🚀")
 
 with st.sidebar:
-    st.header("⚙️ Status")
-    st.success("✅ Supabase Conectado")
+    st.header("⚙️ Configurações Local")
+    drafts_path = st.text_input("Caminho da Pasta de Rascunhos (CapCut)", 
+                               value="/Users/rafaelrodriguesdasilva/Movies/CapCut/User Data/Projects/com.lveditor.draft")
+    
     st.divider()
-    st.info("💡 Este app gera um arquivo .ZIP com vídeos, áudio e XML para o CapCut.")
+    st.header("📊 Status")
+    st.success("✅ Supabase Conectado")
+    st.info("💡 Este app injeta o rascunho diretamente na pasta do CapCut.")
 
-tab1, tab2 = st.tabs(["🚀 Produção", "📂 Indexar Biblioteca"])
+tab1, tab2 = st.tabs(["🚀 Produção Nativa", "📂 Indexar Biblioteca"])
 
 with tab2:
     st.header("Sincronização Drive -> Supabase")
@@ -122,10 +198,11 @@ with tab2:
             st.success("Biblioteca atualizada!")
 
 with tab1:
-    st.header("Novo Projeto de Montagem")
+    st.header("Nova Injeção de Rascunho")
     col1, col2 = st.columns([1, 2])
     
     with col1:
+        project_title = st.text_input("Título do Projeto", value="Nova Montagem")
         audio_file = st.file_uploader("Upload de Áudio (.mp3/wav)", type=['mp3', 'wav'])
         script_text = st.text_area("Roteiro Original", height=300)
         
@@ -140,129 +217,95 @@ with tab1:
             else: duration = WAVE(tmp_audio_path).info.length
         except: duration = 0
             
-        st.success(f"Duração: {duration:.2f}s")
+        st.success(f"Duração Detectada: {duration:.2f}s")
         
-        if st.button("📦 Gerar Kit de Edição (.zip)"):
+        if st.button("🏗️ Injetar no CapCut"):
+            if not os.path.exists(drafts_path):
+                st.error("ERRO: Caminho de rascunhos inválido. Verifique as configurações do CapCut."); st.stop()
+
             supabase = get_supabase_client()
             drive_service = get_drive_service()
             if not drive_service: st.error("Erro Google Drive"); st.stop()
                 
+            # Create Project Folder
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+            folder_name = f"SA_{timestamp}_{project_title.replace(' ', '_')}"
+            project_path = os.path.join(drafts_path, folder_name)
+            os.makedirs(project_path, exist_ok=True)
+            
             num_segments = int(duration // 10) + (1 if duration % 10 > 0 else 0)
             
-            with st.status("Preparando Kit...", expanded=True) as status:
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    clips_dir = os.path.join(temp_dir, "videos")
-                    os.makedirs(clips_dir)
+            with st.status("Injetando rascunho...", expanded=True) as status:
+                # Save audio to project folder
+                audio_final_name = f"audio.{file_ext}"
+                audio_dest = os.path.join(project_path, audio_final_name)
+                with open(audio_dest, 'wb') as f: f.write(audio_file.getvalue())
+                
+                sentences = re.split(r'[.!?]+', script_text)
+                sentences = [s.strip() for s in sentences if s.strip()] or ["..."]
+                sentences_per_block = max(1, len(sentences) // num_segments)
+                
+                selected_clips_data = []
+                progress_bar = st.progress(0)
+                
+                for i in range(num_segments):
+                    block_text = " ".join(sentences[i*sentences_per_block : (i+1)*sentences_per_block])
                     
-                    # Copy audio to kit
-                    audio_final_name = f"audio.{file_ext}"
-                    audio_dest = os.path.join(temp_dir, audio_final_name)
-                    with open(audio_dest, 'wb') as f: f.write(audio_file.getvalue())
+                    res = supabase.table("video_library").select("*").order("last_used_at", desc=False, nullsfirst=True).execute()
+                    videos = res.data
+                    tags_needed = [w.lower() for w in re.findall(r'\w{5,}', block_text)]
                     
-                    sentences = re.split(r'[.!?]+', script_text)
-                    sentences = [s.strip() for s in sentences if s.strip()] or ["..."]
-                    sentences_per_block = max(1, len(sentences) // num_segments)
+                    best_video = None
+                    for v in videos:
+                        if any(t.lower() in [vt.lower() for vt in v.get('tags', [])] for t in tags_needed):
+                            best_video = v; break
+                    if not best_video and videos: best_video = videos[0]
                     
-                    selected_clips = []
-                    progress_bar = st.progress(0)
-                    
-                    for i in range(num_segments):
-                        block_start = i * 10
-                        block_text = " ".join(sentences[i*sentences_per_block : (i+1)*sentences_per_block])
+                    if best_video:
+                        dest_path = os.path.join(project_path, best_video['file_name'])
+                        if not os.path.exists(dest_path):
+                            st.write(f"Baixando: {best_video['file_name']}")
+                            download_file_from_drive(drive_service, best_video['file_id'], dest_path)
                         
-                        res = supabase.table("video_library").select("*").order("last_used_at", desc=False, nullsfirst=True).execute()
-                        videos = res.data
-                        tags_needed = [w.lower() for w in re.findall(r'\w{5,}', block_text)]
+                        try:
+                            cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', dest_path]
+                            v_dur = float(subprocess.check_output(cmd).decode().strip())
+                        except: v_dur = 10.0
                         
-                        best_video = None
-                        for v in videos:
-                            if any(t.lower() in [vt.lower() for vt in v.get('tags', [])] for t in tags_needed):
-                                best_video = v; break
-                        if not best_video and videos: best_video = videos[0]
-                        
-                        if best_video:
-                            dest_path = os.path.join(clips_dir, best_video['file_name'])
-                            if not os.path.exists(dest_path):
-                                st.write(f"Baixando: {best_video['file_name']}")
-                                download_file_from_drive(drive_service, best_video['file_id'], dest_path)
-                            
-                            try:
-                                cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', dest_path]
-                                v_dur = float(subprocess.check_output(cmd).decode().strip())
-                            except: v_dur = 10.0
-                            
-                            clip_frames = min(300, int(v_dur * 30))
-                            selected_clips.append({"id": best_video['file_id'], "name": best_video['file_name'], "start": block_start, "frames": clip_frames})
-                        progress_bar.progress((i + 1) / num_segments)
+                        # Clip max 10s (if > 10s we trim in the json)
+                        clip_duration = min(10.0, v_dur)
+                        selected_clips_data.append({
+                            "id": best_video['file_id'], 
+                            "name": best_video['file_name'],
+                            "local_path": dest_path,
+                            "duration": clip_duration
+                        })
+                    progress_bar.progress((i + 1) / num_segments)
 
-                    # XML Generation (Relative Paths)
-                    xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<xmeml version="5">
-    <project>
-        <name>Soul Anchored Kit</name>
-        <children>
-            <sequence>
-                <name>Montagem Cloud</name>
-                <duration>{int(duration * 30)}</duration>
-                <rate><timebase>30</timebase></rate>
-                <media>
-                    <video>
-                        <track>"""
-                    for i, clip in enumerate(selected_clips):
-                        start = clip['start'] * 30
-                        xml_content += f"""
-                            <clipitem id="clip-{i}">
-                                <name>{clip['name']}</name>
-                                <duration>{clip['frames']}</duration>
-                                <rate><timebase>30</timebase></rate>
-                                <start>{start}</start>
-                                <end>{start + clip['frames']}</end>
-                                <in>0</in>
-                                <out>{clip['frames']}</out>
-                                <file id="file-{i}"><name>{clip['name']}</name><pathurl>file://./videos/{clip['name']}</pathurl></file>
-                            </clipitem>"""
-                    xml_content += f"""</track>
-                    </video>
-                    <audio>
-                        <track>
-                            <clipitem id="audio-main">
-                                <name>{audio_final_name}</name>
-                                <duration>{int(duration * 30)}</duration>
-                                <rate><timebase>30</timebase></rate>
-                                <start>0</start>
-                                <end>{int(duration * 30)}</end>
-                                <in>0</in>
-                                <out>{int(duration * 30)}</out>
-                                <file id="audio-file"><name>{audio_final_name}</name><pathurl>file://./{audio_final_name}</pathurl></file>
-                            </clipitem>
-                        </track>
-                    </audio>
-                </media>
-            </sequence>
-        </children>
-    </project>
-</xmeml>"""
-                    
-                    # Create ZIP in memory
-                    zip_buffer = io.BytesIO()
-                    with zipfile.ZipFile(zip_buffer, "w") as zip_file:
-                        zip_file.writestr("montagem.xml", xml_content)
-                        zip_file.write(audio_dest, audio_final_name)
-                        for clip in selected_clips:
-                            zip_file.write(os.path.join(clips_dir, clip['name']), f"videos/{clip['name']}")
-                    
-                    st.session_state['zip_data'] = zip_buffer.getvalue()
-                    st.session_state['last_clip_ids'] = [c['id'] for c in selected_clips]
-                status.update(label="Kit Pronto!", state="complete")
+                # JSON Generation
+                draft_id = str(uuid.uuid4()).upper()
+                meta_json = generate_draft_meta(project_title, draft_id, drafts_path)
+                content_json = generate_draft_content(project_title, selected_clips_data, {"local_path": audio_dest}, duration)
+                
+                # Save CapCut Files
+                # Note: On Mac, draft_meta.info is often draft_info.json or draft_meta.info
+                # The user requested draft_meta.info specifically.
+                with open(os.path.join(project_path, "draft_meta.info"), "w", encoding="utf-8") as f:
+                    json.dump(meta_json, f, indent=4)
+                
+                with open(os.path.join(project_path, "draft_content.json"), "w", encoding="utf-8") as f:
+                    json.dump(content_json, f, indent=4)
+                
+                st.session_state['last_clip_ids'] = [c['id'] for c in selected_clips_data]
+                status.update(label="Injeção Concluída!", state="complete")
             
-            st.download_button("📥 Baixar Kit de Edição (.zip)", st.session_state['zip_data'], file_name="soul_anchored_kit.zip", mime="application/zip")
+            st.success(f"✅ Projeto injetado com sucesso! Reinicie ou abra o CapCut e procure pelo projeto '{project_title}' na lista de rascunhos.")
 
     if 'last_clip_ids' in st.session_state:
         st.divider()
-        if st.button("✅ Confirmar Uso (Atualizar Supabase)"):
+        if st.button("✅ Confirmar Uso de Clipes"):
             supabase = get_supabase_client()
             now = datetime.now().isoformat()
             for vid in st.session_state['last_clip_ids']:
                 supabase.table("video_library").update({"last_used_at": now}).eq("file_id", vid).execute()
             st.success("Registros atualizados!")
-            del st.session_state['last_clip_ids']
