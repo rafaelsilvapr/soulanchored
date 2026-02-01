@@ -41,8 +41,28 @@ try:
     if GOOGLE_API_KEY:
         try:
             genai.configure(api_key=GOOGLE_API_KEY)
-            # Standard stable name
-            gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+            
+            # Diagnostic: List models if search fails or for debug
+            available_models = [m.name for m in genai.list_models() if "generateContent" in m.supported_generation_methods]
+            
+            # Try to pick the best available Flash model
+            preferred = ["models/gemini-1.5-flash", "models/gemini-1.5-flash-001", "models/gemini-1.5-pro"]
+            selected_model = None
+            for p in preferred:
+                if p in available_models:
+                    selected_model = p
+                    break
+            
+            if not selected_model and available_models:
+                selected_model = available_models[0]
+            
+            if selected_model:
+                gemini_model = genai.GenerativeModel(selected_model)
+                st.sidebar.success(f"IA Ativa: {selected_model}")
+            else:
+                st.error("Nenhum modelo compatível encontrado na sua conta Gemini.")
+                gemini_model = None
+                
         except Exception as e:
             st.error(f"Erro ao configurar Gemini: {e}")
             gemini_model = None
