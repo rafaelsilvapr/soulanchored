@@ -142,9 +142,10 @@ try:
 
     def analyze_vision(image_path, engine="Gemini", retries=1):
         prompt = """
-        Analise este vídeo para um sistema de montagem de vídeos de fé.
-        Identifique: 1. Ação Principal, 2. Emoção Predominante, 3. Descrição Visual.
-        Retorne APENAS JSON: {"acao": "...", "emocao": "...", "descricao": "..."}
+        Analise este vídeo para um sistema de montagem.
+        Liste ELEMENTOS VISUAIS CONCRETOS (objetos, pessoas, cenário) e a AÇÃO LITERAL.
+        Evite interpretações abstratas. Seja direto.
+        Retorne APENAS JSON: {"acao": "...", "emocao": "...", "descricao": "...", "elementos_visuais": ["...", "..."]}
         """
         
         for attempt in range(retries + 1):
@@ -187,7 +188,11 @@ try:
                         
                     json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
                     if not json_match:
-                        raise Exception(f"Gemini enviou formato inválido.")
+                        # Fallback for some models that might not use Markdown but return clean JSON
+                        try:
+                            return json.loads(response.text.strip())
+                        except:
+                            raise Exception(f"Gemini enviou formato inválido.")
                     return json.loads(json_match.group())
                 
                 else:
@@ -207,14 +212,15 @@ try:
         with st.status(f"🧠 {engine} Analisando Conteúdo...", expanded=True) as status:
             try:
                 prompt_base = f"""
-                Você é um Diretor de Montagem Sênior. Sua tarefa é analisar o ROTEIRO COMPLETO e dividi-lo em blocos visuais.
-                OBJETIVO: Sincronizar o texto em blocos de aproximadamente 10 segundos, sem pular nenhuma frase.
+                Você é um Diretor de Montagem. Analise o ROTEIRO e divida em blocos de ~10s.
+                Para cada bloco, descreva a IMAGEM LITERAL que deve aparecer (ex: "Close-up de olho abrindo", "Pessoa caminhando na praia").
+                Evite metáforas abstratas na sugestão visual.
                 
                 ROTEIRO: {script_text}
                 
-                Retorne APENAS um JSON puro no formato:
+                Retorne APENAS JSON:
                 {{ "storyboard": [
-                    {{"timestamp": "00:00", "script_fragment": "...", "visual_theme": "...", "emocao_alvo": "..."}},
+                    {{"timestamp": "00:00", "script_fragment": "...", "sugestao_visual_literal": "...", "elementos_chave": ["...", "..."], "emocao_alvo": "..."}},
                     ...
                 ]}}
                 """
@@ -344,7 +350,7 @@ try:
                                                 }
                                                 supabase.table("video_library").upsert(data).execute()
                                                 consecutive_errors = 0
-                                                time.sleep(3 if vision_engine == "OpenAI" else 10) # Pacing
+                                                time.sleep(1 if vision_engine == "OpenAI" else 2) # Reduced pacing for paid plans
                                             else:
                                                 raise Exception("IA recusou ou enviou resposta vazia (Filtro de Segurança?)")
                                         else:
@@ -373,7 +379,7 @@ try:
                                                     "tags": list(set((f.get('tags') or []) + [meta.get('acao'), meta.get('emocao')]))
                                                 }
                                                 supabase.table("video_library").update(data).eq("file_id", f['file_id']).execute()
-                                                time.sleep(3 if vision_engine == "OpenAI" else 10) # Pacing
+                                                time.sleep(1 if vision_engine == "OpenAI" else 2) # Reduced pacing for paid plans
                                             else:
                                                 raise Exception("IA recusou ou enviou resposta vazia")
                                         else:
@@ -431,17 +437,37 @@ try:
                     session_used = []
                     for block in storyboard:
                         target_emocao = block.get('emocao_alvo', '').lower()
-                        visual_theme = block.get('visual_theme', '').lower()
+                        sugestao_visual = block.get('sugestao_visual_literal', block.get('visual_theme', '')).lower()
+                        elementos_chave = block.get('elementos_chave', [])
                         
-                        # Matching priority: 1. Emotion/Action, 2. Visual Theme, 3. Oldest Used
+                        # Matching priority: Score-based (Literal elements > Description > Emotion)
                         candidates = [v for v in all_videos if v['file_id'] not in recent_ids and v['file_id'] not in session_used]
                         best = None
-                        
-                        # High priority match
+                        best_score = -1
+
                         for v in candidates:
-                            v_meta = f"{v.get('acao','')} {v.get('emocao','')} {v.get('descricao','')}".lower()
-                            if target_emocao in v_meta or any(word in v_meta for word in visual_theme.split()):
-                                best = v; break
+                            score = 0
+                            v_acao = (v.get('acao') or '').lower()
+                            v_desc = (v.get('descricao') or '').lower()
+                            v_tags = (v.get('tags') or [])
+                            if isinstance(v_tags, str): v_tags = [v_tags] 
+                            v_tags = [str(t).lower() for t in v_tags]
+
+                            # 1. Keyword match from 'elementos_chave'
+                            for elem in elementos_chave:
+                                elem = elem.lower()
+                                if elem in v_acao or elem in v_desc: score += 5
+                                if any(elem in t for t in v_tags): score += 3
+
+                            # 2. Text match in description/action
+                            if sugestao_visual in v_acao or sugestao_visual in v_desc: score += 10
+                            
+                            # 3. Emotion match
+                            if target_emocao in str(v.get('emocao', '')).lower(): score += 1
+
+                            if score > best_score:
+                                best_score = score
+                                best = v
                         
                         if not best:
                             best = candidates[0] if candidates else (all_videos[0] if all_videos else None)
@@ -449,7 +475,7 @@ try:
                         if best:
                             final_plan.append({
                                 "Tempo": block['timestamp'], "Texto": block['script_fragment'],
-                                "Sugestão Visual": block['visual_theme'], "ARQUIVO": f"🎬 {best['file_name']}",
+                                "Sugestão Visual": block.get('sugestao_visual_literal', block.get('visual_theme', '')), "ARQUIVO": f"🎬 {best['file_name']}",
                                 "file_id": best['file_id'], "file_name": best['file_name'], "meta": f"{best.get('acao','')} | {best.get('emocao','')}"
                             })
                             session_used.append(best['file_id'])
