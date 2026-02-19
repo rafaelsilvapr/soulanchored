@@ -746,7 +746,9 @@ try:
                                             st.write(f"**Ação:** {v_data.get('acao')}")
                                             st.write(f"**Emoção:** {v_data.get('emocao')}")
                                             if v_data.get('tags'):
-                                                st.caption(f"Tags: {', '.join(v_data.get('tags'))}")
+                                                clean_tags = [str(t) for t in v_data.get('tags') if t and str(t).lower() != 'none']
+                                                if clean_tags:
+                                                    st.caption(f"Tags: {', '.join(clean_tags)}")
                                             st.link_button("Abrir no Drive 🔗", v_data.get('drive_link', ''))
                     else:
                         st.info("🔍 Nenhum vídeo encontrado. Tente outras palavras ou use o modo 'Profundo'.")
