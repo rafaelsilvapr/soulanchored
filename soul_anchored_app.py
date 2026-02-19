@@ -167,7 +167,9 @@ try:
         
         return build('drive', 'v3', credentials=creds)
 
-    def extract_frame(service, file_id, output_path):
+    def extract_frames(service, file_id, timestamps=['00:00:01', '00:00:04']):
+        """Extracts multiple frames at given timestamps and returns a list of paths."""
+        extracted_paths = []
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_video:
                 request = service.files().get_media(fileId=file_id)
@@ -177,73 +179,76 @@ try:
                     _, done = downloader.next_chunk()
                 tmp_video_path = tmp_video.name
             
-            # Try multiple timestamps to find a valid frame
-            for ts in ['00:00:02', '00:00:00', '00:00:05']:
+            for i, ts in enumerate(timestamps):
+                output_path = f"{tmp_video_path}_frame_{i}.jpg"
                 cmd = ['ffmpeg', '-y', '-ss', ts, '-i', tmp_video_path, '-vframes', '1', output_path]
                 res = subprocess.run(cmd, capture_output=True)
                 if res.returncode == 0:
-                    os.unlink(tmp_video_path)
-                    return True
+                    extracted_paths.append(output_path)
             
             os.unlink(tmp_video_path)
-            return False
+            return extracted_paths
         except Exception as e:
-            st.error(f"Erro ao extrair quadro: {e}")
-            return False
+            st.error(f"Erro ao extrair quadros: {e}")
+            return []
 
     def encode_image(image_path):
         import base64
         with open(image_path, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode('utf-8')
 
-    def analyze_vision(image_path, engine="Gemini", retries=1):
+    def analyze_vision(image_paths, engine="Gemini", retries=1):
+        """Analyzes a sequence of images to describe action and emotion."""
         prompt = """
-        Analise este vídeo para um sistema de montagem de vídeos de fé.
-        Identifique: 1. Ação Principal, 2. Emoção Predominante, 3. Descrição Visual.
-        Retorne APENAS JSON: {"acao": "...", "emocao": "...", "descricao": "..."}
+        Analise estas imagens que representam uma sequência de um vídeo de 5 segundos.
+        IMAGE 1 é o início, IMAGE 2 é o fim.
+        
+        Descreva a AÇÃO LITERAL e o MOVIMENTO (ex: 'alguém sentando', 'carro passando', 'pessoa sorrindo').
+        Identifique ELEMENTOS VISUAIS CONCRETOS.
+        
+        Retorne APENAS JSON: 
+        {"acao": "descrição do movimento/ação detectada entre os frames", 
+         "emocao": "vibe ou sentimento predominante", 
+         "descricao": "resumo detalhado dos elementos visuais", 
+         "elementos_visuais": ["lista de objetos/cenário"]}
         """
         
         for attempt in range(retries + 1):
             try:
                 if engine == "OpenAI" and client_openai:
                     time.sleep(1)
-                    base64_image = encode_image(image_path)
+                    content_list = [{"type": "text", "text": prompt}]
+                    for path in image_paths:
+                        base64_img = encode_image(path)
+                        content_list.append({
+                            "type": "image_url", 
+                            "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}
+                        })
+
                     response = client_openai.chat.completions.create(
                         model="gpt-4o",
-                        messages=[
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": prompt},
-                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                                ],
-                            }
-                        ],
+                        messages=[{"role": "user", "content": content_list}],
                         response_format={ "type": "json_object" }
                     )
                     content = response.choices[0].message.content
-                    refusal = getattr(response.choices[0].message, 'refusal', None)
-                    
-                    if refusal:
-                        raise Exception(f"OpenAI recusou por política de segurança: {refusal}")
-                    if not content:
-                        raise Exception("OpenAI retornou conteúdo vazio.")
                     return json.loads(content)
                 
                 elif engine == "Gemini" and gemini_model:
-                    img = Image.open(image_path)
-                    response = gemini_model.generate_content([prompt, img])
-                    
-                    # Handle Gemini Safety Blocking
-                    if not response.candidates or not response.candidates[0].content.parts:
-                        raise Exception("Gemini bloqueou a imagem por motivos de segurança (Safety Filter).")
+                    input_list = [prompt]
+                    for path in image_paths:
+                        input_list.append(Image.open(path))
                         
-                    if not response.text:
-                        raise Exception("Gemini não conseguiu gerar texto para esta imagem.")
+                    response = gemini_model.generate_content(input_list)
+                    
+                    if not response.candidates or not response.candidates[0].content.parts:
+                        raise Exception("Gemini bloqueou a imagem por motivos de segurança.")
                         
                     json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
                     if not json_match:
-                        raise Exception(f"Gemini enviou formato inválido.")
+                        try:
+                            return json.loads(response.text.strip())
+                        except:
+                            raise Exception(f"Gemini enviou formato inválido.")
                     return json.loads(json_match.group())
                 
                 else:
@@ -252,11 +257,11 @@ try:
             except Exception as e:
                 if "429" in str(e):
                     if attempt < retries:
-                        st.warning(f"⏳ Limite atingido no {engine}. Aguardando 60s... ({attempt+1}/{retries})")
+                        st.warning(f"⏳ Limite atingido no {engine}. Aguardando 60s...")
                         time.sleep(60)
                         continue
                 if attempt == retries:
-                    raise e # Re-raise at the last attempt so the sync loop catches it
+                    raise e
         return {}
 
     def get_semantic_storyboard(audio_path, script_text, engine="Gemini"):
@@ -396,23 +401,30 @@ try:
                                     st.write(f"🆕 Indexando [{idx}/{total}]: {f['name']} -> {new_name}")
                                     service.files().update(fileId=f['id'], body={'name': new_name}).execute()
                                     
-                                    with tempfile.NamedTemporaryFile(suffix='.jpg') as tmp_img:
-                                        if extract_frame(service, f['id'], tmp_img.name):
-                                            meta = analyze_vision(tmp_img.name, engine=vision_engine)
-                                            if meta:
-                                                data = {
-                                                    "file_id": f['id'], "file_name": new_name, "drive_link": f['webViewLink'],
-                                                    "acao": meta.get('acao'), "emocao": meta.get('emocao'), "descricao": meta.get('descricao'),
-                                                    "tags": [meta.get('acao'), meta.get('emocao')],
-                                                    "thumbnail_link": f.get('thumbnailLink')
-                                                }
-                                                supabase.table("video_library").upsert(data).execute()
-                                                consecutive_errors = 0
-                                                time.sleep(3 if vision_engine == "OpenAI" else 10) # Pacing
-                                            else:
-                                                raise Exception("IA recusou ou enviou resposta vazia (Filtro de Segurança?)")
+                                    st.write(f"🆕 Indexando [{idx}/{total}]: {f['name']} -> {new_name}")
+                                    service.files().update(fileId=f['id'], body={'name': new_name}).execute()
+                                    
+                                    frame_paths = extract_frames(service, f['id'])
+                                    if frame_paths:
+                                        meta = analyze_vision(frame_paths, engine=vision_engine)
+                                        if meta:
+                                            data = {
+                                                "file_id": f['id'], "file_name": new_name, "drive_link": f['webViewLink'],
+                                                "acao": meta.get('acao'), "emocao": meta.get('emocao'), "descricao": meta.get('descricao'),
+                                                "tags": [meta.get('acao'), meta.get('emocao')],
+                                                "thumbnail_link": f.get('thumbnailLink')
+                                            }
+                                            supabase.table("video_library").upsert(data).execute()
+                                            consecutive_errors = 0
+                                            time.sleep(1 if vision_engine == "OpenAI" else 2)
                                         else:
-                                            raise Exception("FFmpeg: Arquivo pode estar corrompido ou é muito curto.")
+                                            raise Exception("IA recusou ou enviou resposta vazia")
+                                        
+                                        # Cleanup
+                                        for p in frame_paths: 
+                                            if os.path.exists(p): os.unlink(p)
+                                    else:
+                                        raise Exception("FFmpeg: Não foi possível extrair os quadros.")
                                 except Exception as e:
                                     failed_items.append({"file": f['name'], "error": str(e)})
                                     st.warning(f"⚠️ Falha em {f['name']}: {e}")
@@ -428,21 +440,30 @@ try:
                                 idx += 1
                                 try:
                                     st.write(f"🆙 Fazendo Upgrade [{idx}/{total}]: {f['file_name']} ({vision_engine})")
-                                    with tempfile.NamedTemporaryFile(suffix='.jpg') as tmp_img:
-                                        if extract_frame(service, f['file_id'], tmp_img.name):
-                                            meta = analyze_vision(tmp_img.name, engine=vision_engine)
-                                            if meta:
-                                                data = {
-                                                    "acao": meta.get('acao'), "emocao": meta.get('emocao'), "descricao": meta.get('descricao'),
-                                                    "tags": list(set((f.get('tags') or []) + [meta.get('acao'), meta.get('emocao')])),
-                                                    "thumbnail_link": drive_info_map.get(f['file_id'], {}).get('thumbnailLink')
-                                                }
-                                                supabase.table("video_library").update(data).eq("file_id", f['file_id']).execute()
-                                                time.sleep(3 if vision_engine == "OpenAI" else 10) # Pacing
-                                            else:
-                                                raise Exception("IA recusou ou enviou resposta vazia")
+                                    
+                                    frame_paths = extract_frames(service, f['file_id'])
+                                    if frame_paths:
+                                        meta = analyze_vision(frame_paths, engine=vision_engine)
+                                        if meta:
+                                            # Fetch latest drive info to get thumbnailLink if missing
+                                            drive_item = drive_info_map.get(f['file_id'])
+                                            thumb = drive_item.get('thumbnailLink') if drive_item else None
+                                            
+                                            data = {
+                                                "acao": meta.get('acao'), "emocao": meta.get('emocao'), "descricao": meta.get('descricao'),
+                                                "tags": list(set((f.get('tags') or []) + [meta.get('acao'), meta.get('emocao')])),
+                                                "thumbnail_link": thumb or f.get('thumbnail_link')
+                                            }
+                                            supabase.table("video_library").update(data).eq("file_id", f['file_id']).execute()
+                                            time.sleep(1 if vision_engine == "OpenAI" else 2)
                                         else:
-                                            raise Exception("FFmpeg: Falha ao ler vídeo")
+                                            raise Exception("IA recusou ou enviou resposta vazia")
+                                        
+                                        # Cleanup
+                                        for p in frame_paths: 
+                                            if os.path.exists(p): os.unlink(p)
+                                    else:
+                                        raise Exception("FFmpeg: Falha ao ler vídeo")
                                 except Exception as e:
                                     failed_items.append({"file": f['file_name'], "error": str(e)})
                                     st.warning(f"⚠️ Falha em {f['file_name']}: {e}")
