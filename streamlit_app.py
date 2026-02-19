@@ -387,15 +387,19 @@ try:
                         # Identify Groups
                         group_1 = [f for f in drive_files if f['id'] not in db_ids]
                         
-                        # IMPROVED FILTER: Handle the 'None' strings seen in the screenshot
+                        # Upgrade IA (Group 2): Missing action/emotion
                         group_2 = [f for f in db_files if not f.get('acao') or f.get('acao') == 'None' or not f.get('emocao') or f.get('emocao') == 'None']
                         
-                        total = len(group_1) + len(group_2)
+                        # Update Thumbnails Only (Group 3): Has IA but missing thumbnail
+                        group_3 = [f for f in db_files if f['file_id'] not in [x['file_id'] for x in group_2] and not f.get('thumbnail_link')]
+                        
+                        total = len(group_1) + len(group_2) + len(group_3)
                         st.write(f"📊 **Resumo da Varredura:** ({vision_engine})")
                         st.write(f"- Arquivos no Drive: {len(drive_files)}")
                         st.write(f"- Arquivos no Banco: {len(db_files)}")
                         st.write(f"- 🆕 Novos para indexar (Grupo 1): {len(group_1)}")
                         st.write(f"- 🆙 Para upgrade de IA (Grupo 2): {len(group_2)}")
+                        st.write(f"- 🖼️ Para atualizar miniaturas (Grupo 3): {len(group_3)}")
 
                         if total == 0:
                             st.info(f"Biblioteca já está 100% atualizada com metadados de {vision_engine}.")
@@ -472,6 +476,21 @@ try:
                                 except Exception as e:
                                     failed_items.append({"file": f['file_name'], "error": str(e)})
                                     st.warning(f"⚠️ Falha em {f['file_name']}: {e}")
+                                progress_bar.progress(idx / total)
+                            
+                            # Process Group 3 (Thumbnails Only)
+                            for f in group_3:
+                                idx += 1
+                                try:
+                                    st.write(f"🖼️ Atualizando Miniatura [{idx}/{total}]: {f['file_name']}")
+                                    drive_item = drive_info_map.get(f['file_id'])
+                                    if drive_item and drive_item.get('thumbnailLink'):
+                                        supabase.table("video_library").update({"thumbnail_link": drive_item['thumbnailLink']}).eq("file_id", f['file_id']).execute()
+                                    else:
+                                        st.warning(f"⚠️ Drive não forneceu miniatura para {f['file_name']}")
+                                except Exception as e:
+                                    failed_items.append({"file": f['file_name'], "error": str(e)})
+                                    st.warning(f"⚠️ Falha ao atualizar miniatura: {e}")
                                 progress_bar.progress(idx / total)
                             
                             st.session_state.sync_errors = failed_items
