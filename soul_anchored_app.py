@@ -26,12 +26,68 @@ try:
     # --- UI Styling ---
     st.markdown("""
         <style>
-        .stApp { background: linear-gradient(135deg, #07080c 0%, #11121d 100%); color: #e0e0e0; }
-        h1, h2, h3 { font-family: 'Outfit', sans-serif; background: linear-gradient(to right, #00d2ff, #7000ff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-weight: 800; }
-        .stButton>button { background: linear-gradient(135deg, #7000ff 0%, #00d2ff 100%); color: white; border-radius: 8px; font-weight: 600; border: none; padding: 0.5rem 2rem; }
-        .stTable { background-color: rgba(255,255,255,0.05); border-radius: 10px; }
-        [data-testid="stMetricValue"] { color: #00d2ff; }
-        .stProgress > div > div > div > div { background-image: linear-gradient(to right, #00d2ff, #7000ff); }
+        /* Base App Theme - Light Mode */
+        .stApp { background-color: #fcfcfc; color: #1e1e1e; }
+        
+        /* High Contrast Headers */
+        h1, h2, h3 { 
+            font-family: 'Outfit', sans-serif; 
+            background: linear-gradient(to right, #005a8d, #3c008d); 
+            -webkit-background-clip: text; 
+            -webkit-text-fill-color: transparent; 
+            font-weight: 800; 
+            text-shadow: 0px 1px 1px rgba(0,0,0,0.05);
+        }
+        
+        /* Readable Text Adjustments */
+        p, label, span, div { color: #1e1e1e !important; font-weight: 450; }
+        .stMarkdown { line-height: 1.6; }
+        
+        /* Sidebar Contrast */
+        [data-testid="stSidebar"] { background-color: #f1f3f6 !important; border-right: 1px solid #e0e0e0; }
+        
+        /* Buttons - Premium Gradient */
+        .stButton>button { 
+            background: linear-gradient(135deg, #005a8d 0%, #3c008d 100%); 
+            color: white !important; 
+            border-radius: 8px; 
+            font-weight: 600; 
+            border: none; 
+            padding: 0.6rem 2.2rem; 
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            transition: all 0.3s ease;
+        }
+        .stButton>button:hover { 
+            transform: translateY(-2px); 
+            box-shadow: 0 6px 12px rgba(0,0,0,0.15); 
+            opacity: 0.95;
+        }
+        
+        /* Table and Dataframes */
+        .stTable, [data-testid="stDataFrame"] { background-color: white; border: 1px solid #e0e0e0; border-radius: 10px; }
+        
+        /* Metrics */
+        [data-testid="stMetricValue"] { color: #005a8d !important; font-weight: 700; }
+        
+        /* Progress Bar */
+        .stProgress > div > div > div > div { background-image: linear-gradient(to right, #005a8d, #3c008d); }
+        
+        /* Tabs Styling */
+        .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+        .stTabs [data-baseweb="tab"] { 
+            background-color: #f1f3f6; 
+            border-radius: 8px 8px 0 0; 
+            padding: 10px 20px; 
+            color: #4a4a4a !important;
+            border: 1px solid transparent;
+        }
+        .stTabs [aria-selected="true"] { 
+            background-color: white !important; 
+            color: #005a8d !important; 
+            border: 1px solid #e0e0e0 !important;
+            border-bottom: none !important;
+            font-weight: bold !important;
+        }
         </style>
         """, unsafe_allow_html=True)
 
@@ -258,7 +314,7 @@ try:
     st.title("Soul Anchored Assembler")
     st.subheader("Editorial Brain v2.0 🧠🎙️")
 
-    tab1, tab2 = st.tabs(["🚀 Produção de Roteiro", "📂 Biblioteca & Sincronia"])
+    tab1, tab2, tab3 = st.tabs(["🚀 Produção de Roteiro", "📂 Biblioteca & Sincronia", "🔍 Busca & Descoberta"])
 
     supabase = get_supabase_client()
 
@@ -289,7 +345,7 @@ try:
                         page_token = None
                         while True:
                             query = f"'{FOLDER_ID}' in parents and trashed = false and mimeType contains 'video/'"
-                            results = service.files().list(q=query, fields="nextPageToken, files(id, name, webViewLink)", pageToken=page_token).execute()
+                            results = service.files().list(q=query, fields="nextPageToken, files(id, name, webViewLink, thumbnailLink)", pageToken=page_token).execute()
                             drive_files.extend(results.get('files', []))
                             page_token = results.get('nextPageToken')
                             if not page_token: break
@@ -314,6 +370,9 @@ try:
                         if total == 0:
                             st.info(f"Biblioteca já está 100% atualizada com metadados de {vision_engine}.")
                         else:
+                            # Map drive info for easy access (used for thumbnails)
+                            drive_info_map = {f['id']: f for f in drive_files}
+                            
                             # Sequential naming help
                             existing_names = [f['file_name'] for f in db_files if f['file_name'] and f['file_name'].split('.')[0].isdigit()]
                             last_num = max([int(n.split('.')[0]) for n in existing_names]) if existing_names else 0
@@ -340,7 +399,8 @@ try:
                                                 data = {
                                                     "file_id": f['id'], "file_name": new_name, "drive_link": f['webViewLink'],
                                                     "acao": meta.get('acao'), "emocao": meta.get('emocao'), "descricao": meta.get('descricao'),
-                                                    "tags": [meta.get('acao'), meta.get('emocao')]
+                                                    "tags": [meta.get('acao'), meta.get('emocao')],
+                                                    "thumbnail_link": f.get('thumbnailLink')
                                                 }
                                                 supabase.table("video_library").upsert(data).execute()
                                                 consecutive_errors = 0
@@ -370,7 +430,8 @@ try:
                                             if meta:
                                                 data = {
                                                     "acao": meta.get('acao'), "emocao": meta.get('emocao'), "descricao": meta.get('descricao'),
-                                                    "tags": list(set((f.get('tags') or []) + [meta.get('acao'), meta.get('emocao')]))
+                                                    "tags": list(set((f.get('tags') or []) + [meta.get('acao'), meta.get('emocao')])),
+                                                    "thumbnail_link": drive_info_map.get(f['file_id'], {}).get('thumbnailLink')
                                                 }
                                                 supabase.table("video_library").update(data).eq("file_id", f['file_id']).execute()
                                                 time.sleep(3 if vision_engine == "OpenAI" else 10) # Pacing
@@ -537,6 +598,110 @@ try:
                     )
             except Exception as e:
                 st.error(f"Erro ao preparar download: {e}")
+
+    with tab3:
+        st.header("🔍 Busca Inteligente de Vídeos")
+        st.markdown("---")
+        
+        search_col1, search_col2 = st.columns([3, 1])
+        with search_col1:
+            search_query = st.text_input("O que você procura?", placeholder="Ex: 'alguém tomando café', 'clima de mistério', 'pessoa digitando'", key="video_search_input_soul")
+        with search_col2:
+            search_mode = st.selectbox("Modo de Busca", ["Rápido (Palavras-chave)", "Profundo (IA Semântica)"])
+
+        if search_query:
+            all_vids = supabase.table("video_library").select("*").execute().data or []
+            
+            if not all_vids:
+                st.warning("⚠️ Biblioteca vazia. Sincronize na segunda aba.")
+            else:
+                with st.spinner("Buscando matches perfeitos..."):
+                    results = []
+                    q = search_query.lower()
+                    
+                    if search_mode == "Rápido (Palavras-chave)":
+                        for v in all_vids:
+                            score = 0
+                            v_acao = (v.get('acao') or '').lower()
+                            v_desc = (v.get('descricao') or '').lower()
+                            v_emocao = (v.get('emocao') or '').lower()
+                            v_tags = v.get('tags') or []
+                            if isinstance(v_tags, str): v_tags = [v_tags]
+                            v_tags = [str(t).lower() for t in v_tags]
+                            
+                            # Matching
+                            if q in v_acao: score += 10
+                            if q in v_desc: score += 5
+                            if q in v_emocao: score += 5
+                            if any(q in t for t in v_tags): score += 7
+                            
+                            # Partial match for multi-word queries
+                            words = q.split()
+                            if len(words) > 1:
+                                for word in words:
+                                    if word in v_acao: score += 2
+                                    if word in v_desc: score += 1
+                                    
+                            if score > 0:
+                                results.append((v, score))
+                    
+                    else: # IA Semântica
+                        # Prompt IA to extract keywords or rank based on explanation
+                        if gemini_model:
+                            prompt = f"""
+                            Dada a solicitação: "{search_query}"
+                            Extraia os 5 conceitos ou palavras-chave mais importantes para busca visual.
+                            Retorne apenas uma lista JSON: ["palavra1", "palavra2", ...]
+                            """
+                            try:
+                                response = gemini_model.generate_content(prompt)
+                                json_match = re.search(r'\[.*\]', response.text, re.DOTALL)
+                                keywords = json.loads(json_match.group()) if json_match else [search_query]
+                                
+                                for v in all_vids:
+                                    score = 0
+                                    v_text = f"{v.get('acao')} {v.get('descricao')} {v.get('emocao')} {' '.join(v.get('tags') or [])}".lower()
+                                    for kw in keywords:
+                                        if kw.lower() in v_text: score += 5
+                                    if score > 0:
+                                        results.append((v, score))
+                            except:
+                                # Fallback to keyword match
+                                for v in all_vids:
+                                    if q in str(v).lower(): results.append((v, 1))
+                                    
+                    # Sort by score
+                    results.sort(key=lambda x: x[1], reverse=True)
+                    
+                    if results:
+                        st.write(f"✅ Encontramos **{len(results)}** possíveis matches:")
+                        
+                        # Display in grid
+                        cols_per_row = 4
+                        for i in range(0, min(len(results), 24), cols_per_row):
+                            cols = st.columns(cols_per_row)
+                            for j in range(cols_per_row):
+                                if i + j < len(results):
+                                    v_data, v_score = results[i + j]
+                                    with cols[j]:
+                                        # Use thumbnail from DB or fallback
+                                        thumb = v_data.get('thumbnail_link')
+                                        if thumb:
+                                            st.image(thumb, use_container_width=True)
+                                        else:
+                                            st.markdown(f"🎬 **{v_data['file_name']}**")
+                                        
+                                        st.write(f"**{v_data['file_name']}**")
+                                        with st.expander("Ver Detalhes"):
+                                            st.write(f"**Ação:** {v_data.get('acao')}")
+                                            st.write(f"**Emoção:** {v_data.get('emocao')}")
+                                            if v_data.get('tags'):
+                                                st.caption(f"Tags: {', '.join(v_data.get('tags'))}")
+                                            st.link_button("Abrir no Drive 🔗", v_data.get('drive_link', ''))
+                    else:
+                        st.info("🔍 Nenhum vídeo encontrado. Tente outras palavras ou use o modo 'Profundo'.")
+
+    st.markdown("---")
 
 except Exception as e:
     st.error("❌ ERRO CRÍTICO"); st.exception(e); st.code(traceback.format_exc())
